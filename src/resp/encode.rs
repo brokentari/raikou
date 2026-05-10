@@ -4,7 +4,7 @@ use bytes::{BufMut, BytesMut};
 
 use crate::resp::Frame;
 
-/// Appends the RESP2 wire form of `frame` to `out`.
+/// Appends the wire form of `frame` to `out`.
 pub fn encode(frame: &Frame, out: &mut BytesMut) {
     match frame {
         Frame::SimpleString(text) => line(out, b'+', text),
@@ -16,14 +16,50 @@ pub fn encode(frame: &Frame, out: &mut BytesMut) {
             out.put_slice(b"\r\n");
         }
         Frame::NullBulk => out.put_slice(b"$-1\r\n"),
-        Frame::Array(items) => {
-            line(out, b'*', items.len().to_string().as_bytes());
-            for item in items {
-                encode(item, out);
+        Frame::Array(items) => aggregate(out, b'*', items),
+        Frame::NullArray => out.put_slice(b"*-1\r\n"),
+        Frame::Null => out.put_slice(b"_\r\n"),
+        Frame::Boolean(value) => out.put_slice(if *value { b"#t\r\n" } else { b"#f\r\n" }),
+        Frame::Double(value) => line(out, b',', double_text(*value).as_bytes()),
+        Frame::BigNumber(digits) => line(out, b'(', digits),
+        Frame::BulkError(text) => {
+            line(out, b'!', text.len().to_string().as_bytes());
+            out.put_slice(text);
+            out.put_slice(b"\r\n");
+        }
+        Frame::VerbatimString { format, data } => {
+            line(out, b'=', (data.len() + 4).to_string().as_bytes());
+            out.put_slice(format);
+            out.put_u8(b':');
+            out.put_slice(data);
+            out.put_slice(b"\r\n");
+        }
+        Frame::Map(pairs) => {
+            line(out, b'%', pairs.len().to_string().as_bytes());
+            for (key, value) in pairs {
+                encode(key, out);
+                encode(value, out);
             }
         }
-        Frame::NullArray => out.put_slice(b"*-1\r\n"),
-        _ => unreachable!("RESP3 frames are not encoded yet"),
+        Frame::Set(items) => aggregate(out, b'~', items),
+        Frame::Push(items) => aggregate(out, b'>', items),
+    }
+}
+
+fn aggregate(out: &mut BytesMut, prefix: u8, items: &[Frame]) {
+    line(out, prefix, items.len().to_string().as_bytes());
+    for item in items {
+        encode(item, out);
+    }
+}
+
+fn double_text(value: f64) -> String {
+    if value.is_nan() {
+        "nan".to_owned()
+    } else if value.is_infinite() {
+        if value > 0.0 { "inf" } else { "-inf" }.to_owned()
+    } else {
+        value.to_string()
     }
 }
 
@@ -83,5 +119,38 @@ mod tests {
         let frame = Frame::Array(vec![Frame::Integer(1), Frame::Array(vec![Frame::NullBulk])]);
         assert_eq!(wire(&frame), b"*2\r\n:1\r\n*1\r\n$-1\r\n");
         assert_eq!(wire(&Frame::Array(vec![])), b"*0\r\n");
+    }
+
+    #[test]
+    fn resp3_scalars() {
+        assert_eq!(wire(&Frame::Null), b"_\r\n");
+        assert_eq!(wire(&Frame::Boolean(true)), b"#t\r\n");
+        assert_eq!(wire(&Frame::Boolean(false)), b"#f\r\n");
+        assert_eq!(wire(&Frame::Double(1.5)), b",1.5\r\n");
+        assert_eq!(wire(&Frame::Double(f64::INFINITY)), b",inf\r\n");
+        assert_eq!(wire(&Frame::Double(f64::NEG_INFINITY)), b",-inf\r\n");
+        assert_eq!(wire(&Frame::Double(f64::NAN)), b",nan\r\n");
+        assert_eq!(wire(&Frame::BigNumber(Bytes::from("123"))), b"(123\r\n");
+    }
+
+    #[test]
+    fn resp3_strings() {
+        assert_eq!(
+            wire(&Frame::BulkError(Bytes::from("BOOM"))),
+            b"!4\r\nBOOM\r\n"
+        );
+        let verbatim = Frame::VerbatimString {
+            format: *b"txt",
+            data: Bytes::from("abc"),
+        };
+        assert_eq!(wire(&verbatim), b"=7\r\ntxt:abc\r\n");
+    }
+
+    #[test]
+    fn resp3_aggregates() {
+        let map = Frame::Map(vec![(Frame::Integer(1), Frame::Null)]);
+        assert_eq!(wire(&map), b"%1\r\n:1\r\n_\r\n");
+        assert_eq!(wire(&Frame::Set(vec![Frame::Integer(1)])), b"~1\r\n:1\r\n");
+        assert_eq!(wire(&Frame::Push(vec![Frame::Integer(1)])), b">1\r\n:1\r\n");
     }
 }
