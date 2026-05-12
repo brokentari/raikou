@@ -12,6 +12,10 @@ const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 /// Why a client's bytes are not a request; the connection closes after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtocolError {
+    /// An inline request has no end within the line limit.
+    TooBigInline,
+    /// An inline request has a quote that is not closed or not followed by a space.
+    UnbalancedQuotes,
     /// The multibulk count line has no end within the line limit.
     TooBigMultibulkCount,
     /// The multibulk count is not a number or is out of range.
@@ -27,6 +31,8 @@ pub enum ProtocolError {
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TooBigInline => f.write_str("too big inline request"),
+            Self::UnbalancedQuotes => f.write_str("unbalanced quotes in request"),
             Self::TooBigMultibulkCount => f.write_str("too big mbulk count string"),
             Self::InvalidMultibulkLength => f.write_str("invalid multibulk length"),
             Self::ExpectedDollar(got) => write!(f, "expected '$', got '{}'", char::from(*got)),
@@ -45,7 +51,119 @@ pub fn parse(buf: &[u8]) -> Parsed {
     match buf.first() {
         None => Ok(None),
         Some(b'*') => multibulk(buf),
-        Some(&other) => Err(ProtocolError::ExpectedDollar(other)),
+        Some(_) => inline(buf),
+    }
+}
+
+fn inline(buf: &[u8]) -> Parsed {
+    let Some(end) = buf.iter().position(|&byte| byte == b'\n') else {
+        return if buf.len() > MAX_LINE_LEN {
+            Err(ProtocolError::TooBigInline)
+        } else {
+            Ok(None)
+        };
+    };
+    let text = &buf[..end];
+    let text = text.strip_suffix(b"\r").unwrap_or(text);
+    Ok(Some((split_args(text)?, end + 1)))
+}
+
+fn split_args(text: &[u8]) -> Result<Vec<Bytes>, ProtocolError> {
+    let text = text.split(|&byte| byte == 0).next().unwrap_or_default();
+    let mut args = Vec::new();
+    let mut pos = 0;
+    loop {
+        while text.get(pos).is_some_and(|byte| is_space(*byte)) {
+            pos += 1;
+        }
+        if pos >= text.len() {
+            return Ok(args);
+        }
+        let mut arg = Vec::new();
+        while let Some(&byte) = text.get(pos).filter(|byte| !is_space(**byte)) {
+            match byte {
+                b'"' => {
+                    pos = double_quoted(text, pos + 1, &mut arg)?;
+                    break;
+                }
+                b'\'' => {
+                    pos = single_quoted(text, pos + 1, &mut arg)?;
+                    break;
+                }
+                _ => {
+                    arg.push(byte);
+                    pos += 1;
+                }
+            }
+        }
+        args.push(Bytes::from(arg));
+    }
+}
+
+fn is_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+fn closes_cleanly(text: &[u8], pos: usize) -> Result<usize, ProtocolError> {
+    match text.get(pos + 1) {
+        Some(&next) if !is_space(next) => Err(ProtocolError::UnbalancedQuotes),
+        _ => Ok(pos + 1),
+    }
+}
+
+fn double_quoted(text: &[u8], mut pos: usize, arg: &mut Vec<u8>) -> Result<usize, ProtocolError> {
+    loop {
+        match text.get(pos) {
+            None => return Err(ProtocolError::UnbalancedQuotes),
+            Some(b'"') => return closes_cleanly(text, pos),
+            Some(b'\\') if text.get(pos + 1) == Some(&b'x') => {
+                let hex = text.get(pos + 2..pos + 4).and_then(|pair| {
+                    let digits = std::str::from_utf8(pair).ok()?;
+                    u8::from_str_radix(digits, 16)
+                        .ok()
+                        .filter(|_| pair.iter().all(u8::is_ascii_hexdigit))
+                });
+                if let Some(byte) = hex {
+                    arg.push(byte);
+                    pos += 4;
+                } else {
+                    arg.push(b'x');
+                    pos += 2;
+                }
+            }
+            Some(b'\\') if pos + 1 < text.len() => {
+                arg.push(match text[pos + 1] {
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    b'b' => 0x08,
+                    b'a' => 0x07,
+                    other => other,
+                });
+                pos += 2;
+            }
+            Some(&byte) => {
+                arg.push(byte);
+                pos += 1;
+            }
+        }
+    }
+}
+
+fn single_quoted(text: &[u8], mut pos: usize, arg: &mut Vec<u8>) -> Result<usize, ProtocolError> {
+    loop {
+        match text.get(pos) {
+            None => return Err(ProtocolError::UnbalancedQuotes),
+            Some(b'\'') => return closes_cleanly(text, pos),
+            Some(b'\\') if text.get(pos + 1) == Some(&b'\'') => {
+                arg.push(b'\'');
+                pos += 2;
+            }
+            Some(&byte) => {
+                arg.push(byte);
+                pos += 1;
+            }
+        }
     }
 }
 
@@ -124,6 +242,67 @@ mod tests {
         for end in 0..input.len() {
             assert_eq!(parse(&input[..end]), Ok(None), "prefix of {end} bytes");
         }
+    }
+
+    fn inline_args(input: &[u8]) -> Vec<String> {
+        let (argv, used) = args(parse(input));
+        assert_eq!(used, input.len());
+        argv.iter()
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn splits_inline_commands() {
+        assert_eq!(inline_args(b"PING\r\n"), ["PING"]);
+        assert_eq!(inline_args(b"  SET   k\tv \n"), ["SET", "k", "v"]);
+        assert_eq!(inline_args(b"\r\n"), Vec::<String>::new());
+        assert_eq!(inline_args(b"\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn inline_double_quotes() {
+        assert_eq!(inline_args(b"ECHO \"a b\"\r\n"), ["ECHO", "a b"]);
+        assert_eq!(
+            inline_args(b"ECHO \"\\x41\\n\\t\\\\\\\"\"\r\n"),
+            ["ECHO", "A\n\t\\\""]
+        );
+        assert_eq!(inline_args(b"ECHO \"\\xZZ\"\r\n"), ["ECHO", "xZZ"]);
+        assert_eq!(inline_args(b"ECHO \"\"\r\n"), ["ECHO", ""]);
+        assert_eq!(inline_args(b"ECHO a\"b c\"\r\n"), ["ECHO", "ab c"]);
+        let (argv, _) = args(parse(b"ECHO \"\\xff\\b\\a\\r\"\r\n"));
+        assert_eq!(argv[1].as_ref(), b"\xff\x08\x07\r");
+    }
+
+    #[test]
+    fn inline_single_quotes() {
+        assert_eq!(inline_args(b"ECHO 'a \\'b' c\r\n"), ["ECHO", "a 'b", "c"]);
+        assert_eq!(inline_args(b"ECHO '\\n'\r\n"), ["ECHO", "\\n"]);
+    }
+
+    #[test]
+    fn inline_errors() {
+        assert_eq!(
+            parse(b"ECHO \"abc\r\n"),
+            Err(ProtocolError::UnbalancedQuotes)
+        );
+        assert_eq!(
+            parse(b"ECHO 'abc\r\n"),
+            Err(ProtocolError::UnbalancedQuotes)
+        );
+        assert_eq!(
+            parse(b"ECHO \"a\"b\r\n"),
+            Err(ProtocolError::UnbalancedQuotes)
+        );
+        let long = vec![b'a'; MAX_LINE_LEN + 1];
+        assert_eq!(parse(&long), Err(ProtocolError::TooBigInline));
+        assert_eq!(parse(&long[..MAX_LINE_LEN]), Ok(None));
+    }
+
+    #[test]
+    fn inline_waits_for_newline() {
+        assert_eq!(parse(b"PING"), Ok(None));
+        assert_eq!(parse(b"PING\r"), Ok(None));
     }
 
     #[test]
