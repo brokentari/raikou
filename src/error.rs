@@ -48,8 +48,11 @@ impl CommandError {
                 let mut text = BytesMut::new();
                 text.put_slice(b"ERR unknown command '");
                 text.put_slice(name);
-                text.put_slice(b"', with args beginning with: ");
-                text.put_slice(args);
+                text.put_u8(b'\'');
+                if !args.is_empty() {
+                    text.put_slice(b", with args beginning with: ");
+                    text.put_slice(args);
+                }
                 text.freeze()
             }
             Self::WrongArity(name) => Bytes::from(format!(
@@ -96,10 +99,7 @@ mod tests {
     #[test]
     fn unknown_command_without_arguments() {
         let error = CommandError::unknown_command(&argv(&["foo"]));
-        assert_eq!(
-            error.to_string(),
-            "ERR unknown command 'foo', with args beginning with: "
-        );
+        assert_eq!(error.to_string(), "ERR unknown command 'foo'");
     }
 
     #[test]

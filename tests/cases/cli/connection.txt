@@ -1,0 +1,18 @@
+# PING, ECHO and the errors every command shares.
+@resp2-only
+PING
+ping
+PiNg
+PING hello
+PING ""
+PING a b
+ECHO hello
+ECHO ""
+ECHO "a b"
+ECHO "tab\there"
+ECHO "\x00\xff"
+ECHO
+ECHO a b
+FOO
+FOO a b
+foo "x y"
