@@ -1,0 +1,22 @@
+# HELLO errors, and replies after a protocol switch. HELLO success replies differ (id, modules).
+HELLO x
+HELLO 4
+HELLO 1
+HELLO 0
+HELLO -3
+HELLO 9999999999999999999
+HELLO +3
+HELLO 3 foo
+HELLO 3 AUTH a
+HELLO 3 AUTH a b
+HELLO 2 SETNAME "a b"
+HELLO 3 SETNAME
+HELLO 2 foo bar
+@ignore HELLO 3 AUTH default secret
+ECHO after-hello-3
+@ignore HELLO 2
+ECHO after-hello-2
+@ignore HELLO 3 SETNAME named
+ECHO still-3
+@ignore HELLO
+ECHO bare-hello

@@ -1,5 +1,4 @@
 # PING, ECHO and the errors every command shares.
-@resp2-only
 PING
 ping
 PiNg

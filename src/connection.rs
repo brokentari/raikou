@@ -13,10 +13,10 @@ use crate::{command, request};
 // shortcut: Redis closes a client at 1 GiB of unparsed input, so do we
 const MAX_INPUT_LEN: usize = 1 << 30;
 
-pub(crate) async fn run(mut stream: TcpStream) -> io::Result<()> {
+pub(crate) async fn run(mut stream: TcpStream, id: i64) -> io::Result<()> {
     let mut input = BytesMut::with_capacity(4096);
     let mut output = BytesMut::new();
-    let mut session = Session::new();
+    let mut session = Session::new(id);
     loop {
         if stream.read_buf(&mut input).await? == 0 {
             return Ok(());

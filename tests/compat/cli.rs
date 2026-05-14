@@ -8,11 +8,18 @@ use std::{fs, thread};
 
 use crate::oracle::{Environment, Target};
 
+#[derive(Clone, Copy)]
+enum Compare {
+    Exact,
+    Unordered,
+    Ignore,
+}
+
 enum Step {
     Command {
         line: usize,
         text: String,
-        unordered: bool,
+        compare: Compare,
     },
     Sleep(u64),
 }
@@ -26,7 +33,7 @@ struct Case {
 struct Block {
     line: usize,
     command: String,
-    unordered: bool,
+    compare: Compare,
 }
 
 enum Action {
@@ -64,7 +71,13 @@ fn load(path: &Path) -> Result<Case, String> {
             Step::Command {
                 line,
                 text: rest.trim().to_owned(),
-                unordered: true,
+                compare: Compare::Unordered,
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("@ignore ") {
+            Step::Command {
+                line,
+                text: rest.trim().to_owned(),
+                compare: Compare::Ignore,
             }
         } else if trimmed.starts_with('@') {
             return Err(format!("{}:{line}: unknown directive", path.display()));
@@ -72,7 +85,7 @@ fn load(path: &Path) -> Result<Case, String> {
             Step::Command {
                 line,
                 text: trimmed.to_owned(),
-                unordered: false,
+                compare: Compare::Exact,
             }
         };
         steps.push(step);
@@ -99,7 +112,7 @@ fn script(case: &Case) -> Result<(Vec<Action>, Vec<Block>), String> {
     let setup = Block {
         line: 0,
         command: "FLUSHALL".to_owned(),
-        unordered: false,
+        compare: Compare::Exact,
     };
     let mut blocks = vec![setup];
     let mut actions = vec![
@@ -113,12 +126,11 @@ fn script(case: &Case) -> Result<(Vec<Action>, Vec<Block>), String> {
             Step::Command {
                 line,
                 text,
-                unordered,
+                compare,
             } => {
                 actions.push(Action::Line(text.clone()));
                 let word = first_word(text);
-                if let Some(block) = &mut open {
-                    block.unordered |= unordered;
+                if open.is_some() {
                     if word != "EXEC" && word != "DISCARD" {
                         continue;
                     }
@@ -128,14 +140,14 @@ fn script(case: &Case) -> Result<(Vec<Action>, Vec<Block>), String> {
                     open = Some(Block {
                         line: *line,
                         command,
-                        unordered: *unordered,
+                        compare: *compare,
                     });
                     continue;
                 } else {
                     blocks.push(Block {
                         line: *line,
                         command: text.clone(),
-                        unordered: *unordered,
+                        compare: *compare,
                     });
                 }
                 actions.push(Action::Line(format!("ECHO {}", marker(blocks.len() - 1))));
@@ -250,12 +262,15 @@ fn split(blocks: &[Block], output: &str, errors: &str) -> Vec<Reply> {
 }
 
 fn normalize(block: &Block, lines: &[&str]) -> String {
-    if block.unordered {
-        let mut sorted: Vec<&str> = lines.iter().map(|line| strip_index(line)).collect();
-        sorted.sort_unstable();
-        return sorted.join("\n");
+    match block.compare {
+        Compare::Exact => lines.join("\n"),
+        Compare::Ignore => "<ignored>".to_owned(),
+        Compare::Unordered => {
+            let mut sorted: Vec<&str> = lines.iter().map(|line| strip_index(line)).collect();
+            sorted.sort_unstable();
+            sorted.join("\n")
+        }
     }
-    lines.join("\n")
 }
 
 fn cases(root: &Path) -> Result<Vec<PathBuf>, String> {

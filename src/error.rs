@@ -20,6 +20,10 @@ pub enum CommandError {
     },
     /// The command has too few or too many arguments; holds the command name.
     WrongArity(String),
+    /// The client asked for a RESP version the server lacks.
+    NoProto,
+    /// Any other error; holds the full text, including the `ERR` word.
+    Other(Bytes),
 }
 
 impl CommandError {
@@ -42,6 +46,12 @@ impl CommandError {
         }
     }
 
+    /// Builds an error from its full text, such as `ERR syntax error`.
+    #[must_use]
+    pub fn other(text: impl Into<Bytes>) -> Self {
+        Self::Other(text.into())
+    }
+
     fn message(&self) -> Bytes {
         match self {
             Self::UnknownCommand { name, args } => {
@@ -55,6 +65,8 @@ impl CommandError {
                 }
                 text.freeze()
             }
+            Self::NoProto => Bytes::from_static(b"NOPROTO unsupported protocol version"),
+            Self::Other(text) => text.clone(),
             Self::WrongArity(name) => Bytes::from(format!(
                 "ERR wrong number of arguments for '{name}' command"
             )),
@@ -121,6 +133,15 @@ mod tests {
             error.to_string(),
             "ERR wrong number of arguments for 'get' command"
         );
+    }
+
+    #[test]
+    fn fixed_texts() {
+        assert_eq!(
+            CommandError::NoProto.to_string(),
+            "NOPROTO unsupported protocol version"
+        );
+        assert_eq!(CommandError::other("ERR boom").to_string(), "ERR boom");
     }
 
     #[test]

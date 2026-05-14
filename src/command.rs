@@ -13,9 +13,11 @@ use crate::error::CommandError;
 use crate::resp::Frame;
 use crate::session::Session;
 
+/// The Redis version that Raikou reports and is tested against.
+pub(crate) const REDIS_VERSION: &str = "8.10.3";
+
 /// What a handler can see and change.
 pub(crate) struct Context<'a> {
-    #[expect(dead_code, reason = "HELLO reads the session in a later commit")]
     pub(crate) session: &'a mut Session,
 }
 
@@ -40,18 +42,19 @@ impl Command {
     }
 }
 
+const fn command(name: &'static str, arity: i32, handler: Handler) -> Command {
+    Command {
+        name,
+        arity,
+        handler,
+    }
+}
+
 // Sorted by name: `find` binary-searches it.
 static COMMANDS: &[Command] = &[
-    Command {
-        name: "echo",
-        arity: 2,
-        handler: connection::echo,
-    },
-    Command {
-        name: "ping",
-        arity: -1,
-        handler: connection::ping,
-    },
+    command("echo", 2, connection::echo),
+    command("hello", -1, connection::hello),
+    command("ping", -1, connection::ping),
 ];
 
 fn find(name: &[u8]) -> Option<&'static Command> {
@@ -88,7 +91,7 @@ mod tests {
             .iter()
             .map(|part| Bytes::copy_from_slice(part.as_bytes()))
             .collect();
-        dispatch(&mut Session::new(), &argv)
+        dispatch(&mut Session::new(1), &argv)
     }
 
     fn error(text: &str) -> Frame {
@@ -128,17 +131,9 @@ mod tests {
 
     #[test]
     fn accepts_follows_the_arity_sign() {
-        let exact = Command {
-            name: "x",
-            arity: 2,
-            handler: connection::ping,
-        };
+        let exact = command("x", 2, connection::ping);
         assert!(exact.accepts(2) && !exact.accepts(1) && !exact.accepts(3));
-        let at_least = Command {
-            name: "x",
-            arity: -2,
-            handler: connection::ping,
-        };
+        let at_least = command("x", -2, connection::ping);
         assert!(at_least.accepts(2) && at_least.accepts(9) && !at_least.accepts(1));
     }
 }

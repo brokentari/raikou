@@ -53,3 +53,23 @@ pub enum Frame {
     /// `>len` and the elements.
     Push(Vec<Frame>),
 }
+
+impl Frame {
+    /// A bulk string frame.
+    #[must_use]
+    pub fn bulk(data: impl Into<Bytes>) -> Self {
+        Self::BulkString(data.into())
+    }
+
+    /// A simple string frame.
+    #[must_use]
+    pub fn simple(text: impl Into<Bytes>) -> Self {
+        Self::SimpleString(text.into())
+    }
+
+    /// The `+OK` reply.
+    #[must_use]
+    pub fn ok() -> Self {
+        Self::simple("OK")
+    }
+}

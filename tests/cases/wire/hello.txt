@@ -1,0 +1,19 @@
+// Protocol selection on the wire.
+
+@case ping after hello 3
+@resp3
+PING\r\n
+
+@case echo after hello 3
+@resp3
+ECHO hello\r\n
+
+@case hello with a bad version
+HELLO 4\r\nHELLO x\r\nPING\r\n
+
+@case hello syntax error
+HELLO 3 bogus\r\n
+
+@case unknown command after hello 3
+@resp3
+FOO bar\r\n
