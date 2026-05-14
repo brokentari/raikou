@@ -1,0 +1,157 @@
+// Pipelining, split frames, inline commands and every protocol error.
+// Each protocol error arrives in the same write as its multibulk header: Redis 8.10.3 stays
+// silent when a bad argument header comes in a later read, and Raikou reports it.
+
+@case ping multibulk
+*1\r\n$4\r\nPING\r\n
+
+@case ping inline
+PING\r\n
+
+@case inline with bare newline
+PING\nECHO a\n
+
+@case pipelined multibulk and inline
+*1\r\n$4\r\nPING\r\n*2\r\n$4\r\nECHO\r\n$1\r\na\r\nPING\r\nECHO b\r\n
+
+@case frame split in the header
+*2\r\n$4\r\nEC
+@split
+HO\r\n$2\r\nhi\r\n
+
+@case frame split in the payload
+*2\r\n$4\r\nECHO\r\n$5\r\nhe
+@split
+llo\r\n
+
+@case frame split between CR and LF
+*1\r\n$4\r\nPING\r
+@split
+\n
+
+@case request split into three writes
+*2\r\n$4\r\nECHO\r\n
+@split
+$3\r\nabc
+@split
+\r\n
+
+@case inline split across writes
+ECHO hel
+@split
+lo\r\n
+
+@case empty lines are skipped
+\r\n\r\nPING\r\n\n\r\nPING\r\n
+
+@case whitespace-only line is skipped
+   \t \r\nPING\r\n
+
+@case zero length multibulk
+*0\r\nPING\r\n
+
+@case null multibulk
+*-1\r\nPING\r\n
+
+@case negative multibulk
+*-5\r\nPING\r\n
+
+@case inline double quotes
+ECHO "a b"\r\nECHO "x\\x41\\n\\t\\"y"\r\n
+
+@case inline single quotes
+ECHO 'a b'\r\nECHO 'it\\'s'\r\nECHO '\\n'\r\n
+
+@case inline quote joined to text
+ECHO a"b c"\r\n
+
+@case inline quote then text is unbalanced
+ECHO "a"b\r\nPING\r\n
+
+@case inline unbalanced double quote
+ECHO "abc\r\nPING\r\n
+
+@case inline unbalanced single quote
+ECHO 'abc\r\nPING\r\n
+
+@case inline hex escape
+ECHO "\\xff\\x00\\xZZ"\r\n
+
+@case inline tabs and many spaces
+ECHO    a\t\tb  \r\n
+
+@case dollar line is an inline command
+$3\r\nfoo\r\n
+
+@case binary payload
+*2\r\n$4\r\nECHO\r\n$6\r\na\x00\r\n\xffb\r\n
+
+@case payload holds CRLF
+*2\r\n$4\r\nECHO\r\n$4\r\n\r\n\r\n\r\n
+
+@case empty payload
+*2\r\n$4\r\nECHO\r\n$0\r\n\r\n
+
+@case unknown command
+*3\r\n$3\r\nFOO\r\n$1\r\na\r\n$1\r\nb\r\n
+
+@case unknown command without arguments
+*1\r\n$3\r\nFOO\r\n
+
+@case wrong arity
+*1\r\n$4\r\nECHO\r\n*3\r\n$4\r\nECHO\r\n$1\r\na\r\n$1\r\nb\r\n
+
+@case error then valid requests keep the connection
+FOO\r\nPING\r\n
+
+@case protocol error invalid multibulk length
+*x\r\nPING\r\n
+
+@case protocol error multibulk length too large
+*2147483648\r\nPING\r\n
+
+@case protocol error expected dollar
+*1\r\n:1\r\nPING\r\n
+
+@case protocol error expected dollar with letter
+*2\r\n$4\r\nECHO\r\nx\r\n
+
+@case protocol error invalid bulk length
+*1\r\n$x\r\nPING\r\n
+
+@case protocol error negative bulk length
+*1\r\n$-1\r\nPING\r\n
+
+@case protocol error bulk length too large
+*1\r\n$536870913\r\nPING\r\n
+
+@case bulk length at the limit waits for data
+*1\r\n$536870912\r\nabc
+
+@case protocol error oversized inline request
+@repeat 70000 a
+
+@case inline request at the limit waits for a newline
+@repeat 65536 a
+
+@case oversized multibulk count line
+*
+@repeat 70000 1
+
+@case pipelined requests before a protocol error are answered
+PING\r\nPING\r\n*x\r\nPING\r\n
+
+@case lone star
+*\r\nPING\r\n
+
+@case plus sign in length
+*+1\r\n$4\r\nPING\r\n
+
+@case leading zero in length
+*01\r\n$4\r\nPING\r\n
+
+@case missing CRLF after payload is not checked
+*2\r\n$4\r\nECHO\r\n$2\r\nabXXPING\r\n
+
+@case incomplete request stays pending
+*2\r\n$4\r\nECHO\r\n$3\r\nab

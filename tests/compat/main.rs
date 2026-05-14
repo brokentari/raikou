@@ -2,6 +2,7 @@
 
 mod cli;
 mod oracle;
+mod wire;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -15,7 +16,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match cli::run_all(&environment, root) {
+    let failures = cli::run_all(&environment, root)
+        .and_then(|cli| wire::run_all(&environment, root).map(|wire| cli + wire));
+    match failures {
         Ok(0) => ExitCode::SUCCESS,
         Ok(failures) => {
             eprintln!("compat: {failures} mismatches");
