@@ -29,6 +29,8 @@ pub enum CommandError {
     },
     /// An argument is not a 64-bit integer.
     NotInteger,
+    /// The arguments do not fit the command's syntax.
+    Syntax,
     /// The client asked for a RESP version the server lacks.
     NoProto,
     /// Any other error; holds the full text, including the `ERR` word.
@@ -90,6 +92,7 @@ impl CommandError {
                 text.put_slice(format!("'. Try {command} HELP.").as_bytes());
                 text.freeze()
             }
+            Self::Syntax => Bytes::from_static(b"ERR syntax error"),
             Self::NotInteger => Bytes::from_static(b"ERR value is not an integer or out of range"),
             Self::NoProto => Bytes::from_static(b"NOPROTO unsupported protocol version"),
             Self::Other(text) => text.clone(),

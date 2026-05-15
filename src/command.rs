@@ -6,6 +6,7 @@
 )]
 
 mod connection;
+mod server;
 
 use bytes::Bytes;
 
@@ -41,6 +42,11 @@ impl Command {
             argc >= -arity
         }
     }
+
+    const fn with_subcommands(mut self, subcommands: &'static [Command]) -> Self {
+        self.subcommands = subcommands;
+        self
+    }
 }
 
 fn container(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -67,6 +73,7 @@ const fn command(name: &'static str, arity: i32, handler: Handler) -> Command {
 
 // Sorted by name: `find` binary-searches each table.
 static COMMANDS: &[Command] = &[
+    command("auth", -2, connection::auth),
     parent(
         "client",
         -2,
@@ -78,8 +85,14 @@ static COMMANDS: &[Command] = &[
             command("setname", 3, connection::client_setname),
         ],
     ),
+    command("command", -1, server::command).with_subcommands(&[
+        command("count", 2, server::command_count),
+        command("docs", -2, server::command_docs),
+    ]),
+    parent("config", -2, &[command("get", -3, server::config_get)]),
     command("echo", 2, connection::echo),
     command("hello", -1, connection::hello),
+    command("info", -1, server::info),
     command("ping", -1, connection::ping),
     command("quit", -1, connection::quit),
     command("reset", 1, connection::reset),
@@ -98,6 +111,11 @@ fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
     Some(&table[index])
 }
 
+/// The number of top-level commands in the table.
+pub(crate) fn count() -> usize {
+    COMMANDS.len()
+}
+
 /// Runs the request `argv` for a client and returns the reply.
 pub(crate) fn dispatch(session: &mut Session, argv: &[Bytes]) -> Frame {
     execute(&mut Context { session }, argv).unwrap_or_else(Frame::from)
@@ -109,7 +127,7 @@ fn execute(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandEr
     if !command.accepts(argv.len()) {
         return Err(CommandError::WrongArity(command.name.to_owned()));
     }
-    if !command.subcommands.is_empty() {
+    if !command.subcommands.is_empty() && argv.len() >= 2 {
         let parent = command;
         command = find(parent.subcommands, &argv[1])
             .ok_or_else(|| CommandError::unknown_subcommand(parent.name, &argv[1]))?;

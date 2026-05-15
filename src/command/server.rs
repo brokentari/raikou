@@ -1,0 +1,107 @@
+//! Server commands: `INFO`, `COMMAND` and `CONFIG GET`.
+
+use bytes::Bytes;
+
+use crate::command::{self, Context, REDIS_VERSION};
+use crate::error::CommandError;
+use crate::resp::Frame;
+
+const SERVER_SECTIONS: [&[u8]; 4] = [b"server", b"default", b"all", b"everything"];
+
+pub(super) fn info(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let wanted = argv.len() == 1
+        || argv[1..].iter().any(|section| {
+            SERVER_SECTIONS
+                .iter()
+                .any(|known| section.eq_ignore_ascii_case(known))
+        });
+    // shortcut: only the Server section exists; uptime and port need server state
+    let text = if wanted {
+        format!(
+            "# Server\r\nredis_version:{REDIS_VERSION}\r\nredis_mode:standalone\r\nos:{}\r\n\
+             arch_bits:{}\r\nprocess_id:{}\r\n",
+            std::env::consts::OS,
+            usize::BITS,
+            std::process::id(),
+        )
+    } else {
+        String::new()
+    };
+    Ok(Frame::VerbatimString {
+        format: *b"txt",
+        data: Bytes::from(text),
+    })
+}
+
+pub(super) fn command(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    // shortcut: no command metadata, so clients start without hints
+    Ok(Frame::Array(Vec::new()))
+}
+
+pub(super) fn command_count(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    let count = i64::try_from(command::count()).unwrap_or(i64::MAX);
+    Ok(Frame::Integer(count))
+}
+
+pub(super) fn command_docs(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    Ok(Frame::Map(Vec::new()))
+}
+
+pub(super) fn config_get(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    // shortcut: no setting is exposed, so every pattern matches nothing
+    Ok(Frame::Map(Vec::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::command::dispatch;
+    use crate::session::Session;
+
+    use super::*;
+
+    fn run(parts: &[&str]) -> Frame {
+        let argv: Vec<Bytes> = parts
+            .iter()
+            .map(|part| Bytes::copy_from_slice(part.as_bytes()))
+            .collect();
+        dispatch(&mut Session::new(1, String::new(), String::new()), &argv)
+    }
+
+    fn info_text(parts: &[&str]) -> String {
+        let Frame::VerbatimString { format, data } = run(parts) else {
+            panic!("INFO is a verbatim string");
+        };
+        assert_eq!(&format, b"txt");
+        String::from_utf8(data.to_vec()).expect("text")
+    }
+
+    #[test]
+    fn info_lists_the_server_section() {
+        let text = info_text(&["INFO"]);
+        assert!(text.starts_with("# Server\r\n"));
+        assert!(text.contains(&format!("redis_version:{REDIS_VERSION}\r\n")));
+        assert!(text.contains("redis_mode:standalone\r\n"));
+        assert_eq!(info_text(&["info", "SERVER"]), text);
+        assert_eq!(info_text(&["INFO", "everything"]), text);
+    }
+
+    #[test]
+    fn info_for_an_unknown_section_is_empty() {
+        assert_eq!(info_text(&["INFO", "nosuch"]), "");
+    }
+
+    #[test]
+    fn command_replies_are_empty_or_counts() {
+        assert_eq!(run(&["COMMAND"]), Frame::Array(Vec::new()));
+        assert_eq!(run(&["COMMAND", "DOCS"]), Frame::Map(Vec::new()));
+        assert_eq!(
+            run(&["COMMAND", "COUNT"]),
+            Frame::Integer(i64::try_from(command::count()).expect("small"))
+        );
+    }
+
+    #[test]
+    fn config_get_matches_nothing() {
+        assert_eq!(run(&["CONFIG", "GET", "maxmemory"]), Frame::Map(Vec::new()));
+    }
+}

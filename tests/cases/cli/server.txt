@@ -1,0 +1,21 @@
+# AUTH, COMMAND, CONFIG and INFO errors. Their success replies differ from Redis.
+AUTH
+AUTH x
+AUTH a b
+AUTH default b
+AUTH a b c
+AUTH default
+COMMAND FOO
+COMMAND COUNT x
+@ignore COMMAND
+@ignore COMMAND COUNT
+@ignore COMMAND DOCS
+@ignore COMMAND DOCS get
+CONFIG
+CONFIG GET
+CONFIG FOO bar
+CONFIG GET nosuchsetting
+CONFIG GET no*such
+@ignore INFO
+@ignore INFO server
+@ignore INFO nosuchsection

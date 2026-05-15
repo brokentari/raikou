@@ -66,6 +66,17 @@ pub(super) fn hello(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, 
     Ok(hello_reply(context))
 }
 
+pub(super) fn auth(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    match argv {
+        [_, _] => Err(CommandError::other(
+            "ERR AUTH <password> called without any password configured for the default user. \
+             Are you sure your configuration is correct?",
+        )),
+        [_, user, password] => authenticate(user, password).map(|()| Frame::ok()),
+        _ => Err(CommandError::Syntax),
+    }
+}
+
 pub(super) fn client_id(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
     Ok(Frame::Integer(context.session.id))
 }
@@ -421,6 +432,24 @@ mod tests {
         assert_eq!(
             (session.protocol, session.name.clone(), session.db),
             (Protocol::Resp2, None, 0)
+        );
+    }
+
+    #[test]
+    fn auth_follows_a_server_without_a_password() {
+        let mut session = Session::new(1, String::new(), String::new());
+        assert!(
+            matches!(run(&mut session, &["AUTH", "secret"]), Frame::Error(text)
+            if text.starts_with(b"ERR AUTH <password> called without any password configured"))
+        );
+        assert_eq!(run(&mut session, &["AUTH", "default", "x"]), Frame::ok());
+        assert_eq!(
+            run(&mut session, &["AUTH", "bob", "x"]),
+            error("WRONGPASS invalid username-password pair or user is disabled.")
+        );
+        assert_eq!(
+            run(&mut session, &["AUTH", "a", "b", "c"]),
+            error("ERR syntax error")
         );
     }
 
