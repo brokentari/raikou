@@ -1,0 +1,12 @@
+// RESP3 replies on the wire.
+
+@case null reply in resp3
+@resp3
+GET nosuchkey\r\n
+
+@case null reply in resp2
+GET nosuchkey\r\n
+
+@case bulk reply in resp3
+@resp3
+SET wirekey hello\r\nGET wirekey\r\nDEL wirekey\r\n

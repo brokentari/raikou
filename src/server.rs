@@ -1,21 +1,25 @@
 //! The TCP accept loop.
 
 use std::io;
+use std::sync::{Arc, Mutex};
 
 use tokio::net::TcpListener;
 
 use crate::connection;
+use crate::state::State;
 
 /// Accepts clients on `listener` and serves each on its own task.
 pub async fn serve(listener: TcpListener) -> io::Result<()> {
+    let shared = Arc::new(Mutex::new(State::default()));
     let mut next_id = 1;
     loop {
         let (stream, _) = listener.accept().await?;
         let id = next_id;
+        let shared = Arc::clone(&shared);
         next_id += 1;
         tokio::spawn(async move {
             // shortcut: a connection that ends with an I/O error has nobody left to tell
-            let _ = connection::run(stream, id).await;
+            let _ = connection::run(stream, id, shared).await;
         });
     }
 }

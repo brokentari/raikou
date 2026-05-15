@@ -1,0 +1,49 @@
+# GET, SET and DEL.
+GET missing
+SET k v
+GET k
+SET k ""
+GET k
+GET k
+SET k "with space"
+GET k
+SET bin "\x00\x01\xff"
+GET bin
+SET k second
+GET k
+SET other 1
+DEL k
+GET k
+DEL k
+DEL k other missing
+DEL other
+DEL a a
+SET a 1
+DEL a a
+GET
+GET a b
+SET
+SET k
+SET k v extra
+DEL
+get k
+set Mixed Case
+GET Mixed
+GET mixed
+GET Mixed
+SELECT 1
+GET Mixed
+SET Mixed one
+SELECT 0
+GET Mixed
+SELECT 1
+GET Mixed
+DEL Mixed
+SELECT 0
+DEL Mixed
+FLUSHALL
+FLUSHALL ASYNC
+FLUSHALL sync
+FLUSHALL bogus
+FLUSHALL async sync
+GET Mixed

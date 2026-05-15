@@ -1,4 +1,4 @@
-//! Server commands: `INFO`, `COMMAND` and `CONFIG GET`.
+//! Server commands: `INFO`, `COMMAND`, `CONFIG GET` and `FLUSHALL`.
 
 use bytes::Bytes;
 
@@ -33,6 +33,17 @@ pub(super) fn info(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, Command
     })
 }
 
+pub(super) fn flushall(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    match argv {
+        [_] => {}
+        [_, mode] if mode.eq_ignore_ascii_case(b"async") || mode.eq_ignore_ascii_case(b"sync") => {}
+        _ => return Err(CommandError::Syntax),
+    }
+    // shortcut: FLUSHALL holds the lock until every database is empty, as Redis does
+    context.state.store.flush_all();
+    Ok(Frame::ok())
+}
+
 pub(super) fn command(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
     // shortcut: no command metadata, so clients start without hints
     Ok(Frame::Array(Vec::new()))
@@ -54,17 +65,12 @@ pub(super) fn config_get(_: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, Comm
 
 #[cfg(test)]
 mod tests {
-    use crate::command::dispatch;
-    use crate::session::Session;
+    use crate::command::harness::Harness;
 
     use super::*;
 
     fn run(parts: &[&str]) -> Frame {
-        let argv: Vec<Bytes> = parts
-            .iter()
-            .map(|part| Bytes::copy_from_slice(part.as_bytes()))
-            .collect();
-        dispatch(&mut Session::new(1, String::new(), String::new()), &argv)
+        Harness::new().run(parts)
     }
 
     fn info_text(parts: &[&str]) -> String {
@@ -97,6 +103,22 @@ mod tests {
         assert_eq!(
             run(&["COMMAND", "COUNT"]),
             Frame::Integer(i64::try_from(command::count()).expect("small"))
+        );
+    }
+
+    #[test]
+    fn flushall_empties_every_database() {
+        let mut client = Harness::new();
+        client.run(&["SET", "a", "1"]);
+        client.run(&["SELECT", "2"]);
+        client.run(&["SET", "b", "2"]);
+        assert_eq!(client.run(&["FLUSHALL", "ASYNC"]), Frame::ok());
+        assert_eq!(client.run(&["GET", "b"]), Frame::Null);
+        client.run(&["SELECT", "0"]);
+        assert_eq!(client.run(&["GET", "a"]), Frame::Null);
+        assert_eq!(
+            client.run(&["FLUSHALL", "later"]),
+            crate::command::harness::error("ERR syntax error")
         );
     }
 

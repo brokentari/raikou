@@ -235,22 +235,9 @@ fn validate_client_name(name: &[u8]) -> Result<(), CommandError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::command::dispatch;
-    use crate::session::Session;
+    use crate::command::harness::{Harness, error};
 
     use super::*;
-
-    fn run(session: &mut Session, parts: &[&str]) -> Frame {
-        let argv: Vec<Bytes> = parts
-            .iter()
-            .map(|part| Bytes::copy_from_slice(part.as_bytes()))
-            .collect();
-        dispatch(session, &argv)
-    }
-
-    fn error(text: &str) -> Frame {
-        Frame::Error(Bytes::copy_from_slice(text.as_bytes()))
-    }
 
     fn field<'a>(reply: &'a Frame, key: &str) -> &'a Frame {
         let Frame::Map(pairs) = reply else {
@@ -266,8 +253,9 @@ mod tests {
 
     #[test]
     fn hello_reports_server_facts() {
-        let mut session = Session::new(7, String::new(), String::new());
-        let reply = run(&mut session, &["HELLO"]);
+        let mut client = Harness::new();
+        client.session.id = 7;
+        let reply = client.run(&["HELLO"]);
         assert_eq!(field(&reply, "server"), &Frame::bulk("redis"));
         assert_eq!(field(&reply, "version"), &Frame::bulk(REDIS_VERSION));
         assert_eq!(field(&reply, "proto"), &Frame::Integer(2));
@@ -279,26 +267,26 @@ mod tests {
 
     #[test]
     fn hello_switches_protocol() {
-        let mut session = Session::new(1, String::new(), String::new());
-        let reply = run(&mut session, &["HELLO", "3"]);
+        let mut client = Harness::new();
+        let reply = client.run(&["HELLO", "3"]);
         assert_eq!(field(&reply, "proto"), &Frame::Integer(3));
-        assert_eq!(session.protocol, Protocol::Resp3);
-        run(&mut session, &["hello", "2"]);
-        assert_eq!(session.protocol, Protocol::Resp2);
+        assert_eq!(client.session.protocol, Protocol::Resp3);
+        client.run(&["hello", "2"]);
+        assert_eq!(client.session.protocol, Protocol::Resp2);
     }
 
     #[test]
     fn hello_sets_and_clears_the_client_name() {
-        let mut session = Session::new(1, String::new(), String::new());
-        run(&mut session, &["HELLO", "3", "SETNAME", "worker"]);
-        assert_eq!(session.name, Some(Bytes::from("worker")));
-        run(&mut session, &["HELLO", "3", "SETNAME", ""]);
-        assert_eq!(session.name, None);
+        let mut client = Harness::new();
+        client.run(&["HELLO", "3", "SETNAME", "worker"]);
+        assert_eq!(client.session.name, Some(Bytes::from("worker")));
+        client.run(&["HELLO", "3", "SETNAME", ""]);
+        assert_eq!(client.session.name, None);
     }
 
     #[test]
     fn hello_rejects_bad_input_without_changing_the_session() {
-        let mut session = Session::new(1, String::new(), String::new());
+        let mut client = Harness::new();
         let cases = [
             (
                 vec!["HELLO", "x"],
@@ -327,137 +315,134 @@ mod tests {
             ),
         ];
         for (parts, text) in cases {
-            assert_eq!(run(&mut session, &parts), error(text), "{parts:?}");
-            assert_eq!(session.protocol, Protocol::Resp2);
-            assert_eq!(session.name, None);
+            assert_eq!(client.run(&parts), error(text), "{parts:?}");
+            assert_eq!(client.session.protocol, Protocol::Resp2);
+            assert_eq!(client.session.name, None);
         }
     }
 
     #[test]
     fn hello_accepts_the_default_user() {
-        let mut session = Session::new(1, String::new(), String::new());
-        let reply = run(&mut session, &["HELLO", "3", "AUTH", "default", "anything"]);
+        let mut client = Harness::new();
+        let reply = client.run(&["HELLO", "3", "AUTH", "default", "anything"]);
         assert_eq!(field(&reply, "proto"), &Frame::Integer(3));
     }
 
     #[test]
     fn client_name_round_trip() {
-        let mut session = Session::new(9, String::new(), String::new());
-        assert_eq!(run(&mut session, &["CLIENT", "GETNAME"]), Frame::Null);
-        assert_eq!(
-            run(&mut session, &["CLIENT", "SETNAME", "app"]),
-            Frame::ok()
-        );
-        assert_eq!(
-            run(&mut session, &["CLIENT", "GETNAME"]),
-            Frame::bulk("app")
-        );
-        assert_eq!(run(&mut session, &["CLIENT", "SETNAME", ""]), Frame::ok());
-        assert_eq!(run(&mut session, &["CLIENT", "GETNAME"]), Frame::Null);
-        assert_eq!(run(&mut session, &["CLIENT", "ID"]), Frame::Integer(9));
+        let mut client = Harness::new();
+        client.session.id = 9;
+        assert_eq!(client.run(&["CLIENT", "GETNAME"]), Frame::Null);
+        assert_eq!(client.run(&["CLIENT", "SETNAME", "app"]), Frame::ok());
+        assert_eq!(client.run(&["CLIENT", "GETNAME"]), Frame::bulk("app"));
+        assert_eq!(client.run(&["CLIENT", "SETNAME", ""]), Frame::ok());
+        assert_eq!(client.run(&["CLIENT", "GETNAME"]), Frame::Null);
+        assert_eq!(client.run(&["CLIENT", "ID"]), Frame::Integer(9));
     }
 
     #[test]
     fn client_setinfo_stores_library_details() {
-        let mut session = Session::new(1, String::new(), String::new());
+        let mut client = Harness::new();
         assert_eq!(
-            run(&mut session, &["CLIENT", "SETINFO", "lib-name", "lib"]),
+            client.run(&["CLIENT", "SETINFO", "lib-name", "lib"]),
             Frame::ok()
         );
         assert_eq!(
-            run(&mut session, &["CLIENT", "SETINFO", "LIB-VER", "1.0"]),
+            client.run(&["CLIENT", "SETINFO", "LIB-VER", "1.0"]),
             Frame::ok()
         );
-        let Frame::VerbatimString { data, .. } = run(&mut session, &["CLIENT", "INFO"]) else {
+        let Frame::VerbatimString { data, .. } = client.run(&["CLIENT", "INFO"]) else {
             panic!("CLIENT INFO is a verbatim string");
         };
         let text = String::from_utf8_lossy(&data).into_owned();
         assert!(text.contains("lib-name=lib lib-ver=1.0\n"), "{text}");
         assert_eq!(
-            run(&mut session, &["CLIENT", "SETINFO", "foo", "x"]),
+            client.run(&["CLIENT", "SETINFO", "foo", "x"]),
             error("ERR Unrecognized option 'foo'")
         );
     }
 
     #[test]
     fn client_errors_name_the_subcommand() {
-        let mut session = Session::new(1, String::new(), String::new());
+        let mut client = Harness::new();
         assert_eq!(
-            run(&mut session, &["CLIENT", "ID", "x"]),
+            client.run(&["CLIENT", "ID", "x"]),
             error("ERR wrong number of arguments for 'client|id' command")
         );
         assert_eq!(
-            run(&mut session, &["CLIENT", "FOO"]),
+            client.run(&["CLIENT", "FOO"]),
             error("ERR unknown subcommand 'FOO'. Try CLIENT HELP.")
         );
         assert_eq!(
-            run(&mut session, &["CLIENT"]),
+            client.run(&["CLIENT"]),
             error("ERR wrong number of arguments for 'client' command")
         );
     }
 
     #[test]
     fn select_checks_the_index() {
-        let mut session = Session::new(1, String::new(), String::new());
-        assert_eq!(run(&mut session, &["SELECT", "15"]), Frame::ok());
-        assert_eq!(session.db, 15);
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["SELECT", "15"]), Frame::ok());
+        assert_eq!(client.session.db, 15);
         assert_eq!(
-            run(&mut session, &["SELECT", "16"]),
+            client.run(&["SELECT", "16"]),
             error("ERR DB index is out of range")
         );
         assert_eq!(
-            run(&mut session, &["SELECT", "-1"]),
+            client.run(&["SELECT", "-1"]),
             error("ERR DB index is out of range")
         );
         assert_eq!(
-            run(&mut session, &["SELECT", "x"]),
+            client.run(&["SELECT", "x"]),
             error("ERR value is not an integer or out of range")
         );
-        assert_eq!(session.db, 15);
+        assert_eq!(client.session.db, 15);
     }
 
     #[test]
     fn quit_marks_the_session_closing() {
-        let mut session = Session::new(1, String::new(), String::new());
-        assert_eq!(run(&mut session, &["QUIT"]), Frame::ok());
-        assert!(session.closing);
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["QUIT"]), Frame::ok());
+        assert!(client.session.closing);
     }
 
     #[test]
     fn reset_restores_the_connection_state() {
-        let mut session = Session::new(1, String::new(), String::new());
-        run(&mut session, &["HELLO", "3", "SETNAME", "n"]);
-        run(&mut session, &["SELECT", "2"]);
-        assert_eq!(run(&mut session, &["RESET"]), Frame::simple("RESET"));
+        let mut client = Harness::new();
+        client.run(&["HELLO", "3", "SETNAME", "n"]);
+        client.run(&["SELECT", "2"]);
+        assert_eq!(client.run(&["RESET"]), Frame::simple("RESET"));
         assert_eq!(
-            (session.protocol, session.name.clone(), session.db),
+            (
+                client.session.protocol,
+                client.session.name.clone(),
+                client.session.db
+            ),
             (Protocol::Resp2, None, 0)
         );
     }
 
     #[test]
     fn auth_follows_a_server_without_a_password() {
-        let mut session = Session::new(1, String::new(), String::new());
-        assert!(
-            matches!(run(&mut session, &["AUTH", "secret"]), Frame::Error(text)
-            if text.starts_with(b"ERR AUTH <password> called without any password configured"))
-        );
-        assert_eq!(run(&mut session, &["AUTH", "default", "x"]), Frame::ok());
+        let mut client = Harness::new();
+        assert!(matches!(client.run(&["AUTH", "secret"]), Frame::Error(text)
+            if text.starts_with(b"ERR AUTH <password> called without any password configured")));
+        assert_eq!(client.run(&["AUTH", "default", "x"]), Frame::ok());
         assert_eq!(
-            run(&mut session, &["AUTH", "bob", "x"]),
+            client.run(&["AUTH", "bob", "x"]),
             error("WRONGPASS invalid username-password pair or user is disabled.")
         );
         assert_eq!(
-            run(&mut session, &["AUTH", "a", "b", "c"]),
+            client.run(&["AUTH", "a", "b", "c"]),
             error("ERR syntax error")
         );
     }
 
     #[test]
     fn echo_and_ping_reply() {
-        let mut session = Session::new(1, String::new(), String::new());
-        assert_eq!(run(&mut session, &["PING"]), Frame::simple("PONG"));
-        assert_eq!(run(&mut session, &["PING", "x"]), Frame::bulk("x"));
-        assert_eq!(run(&mut session, &["ECHO", "x"]), Frame::bulk("x"));
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["PING"]), Frame::simple("PONG"));
+        assert_eq!(client.run(&["PING", "x"]), Frame::bulk("x"));
+        assert_eq!(client.run(&["ECHO", "x"]), Frame::bulk("x"));
     }
 }

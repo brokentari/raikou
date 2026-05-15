@@ -6,20 +6,27 @@
 )]
 
 mod connection;
+#[cfg(test)]
+pub(crate) mod harness;
+mod keys;
 mod server;
+mod strings;
 
 use bytes::Bytes;
 
 use crate::error::CommandError;
 use crate::resp::Frame;
 use crate::session::Session;
+use crate::state::State;
 
 /// The Redis version that Raikou reports and is tested against.
 pub(crate) const REDIS_VERSION: &str = "8.10.3";
 
 /// What a handler can see and change.
 pub(crate) struct Context<'a> {
+    pub(crate) state: &'a mut State,
     pub(crate) session: &'a mut Session,
+    pub(crate) now_ms: u64,
 }
 
 pub(crate) type Handler = fn(&mut Context<'_>, &[Bytes]) -> Result<Frame, CommandError>;
@@ -90,13 +97,17 @@ static COMMANDS: &[Command] = &[
         command("docs", -2, server::command_docs),
     ]),
     parent("config", -2, &[command("get", -3, server::config_get)]),
+    command("del", -2, keys::del),
     command("echo", 2, connection::echo),
+    command("flushall", -1, server::flushall),
+    command("get", 2, strings::get),
     command("hello", -1, connection::hello),
     command("info", -1, server::info),
     command("ping", -1, connection::ping),
     command("quit", -1, connection::quit),
     command("reset", 1, connection::reset),
     command("select", 2, connection::select),
+    command("set", -3, strings::set),
 ];
 
 fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
@@ -117,8 +128,21 @@ pub(crate) fn count() -> usize {
 }
 
 /// Runs the request `argv` for a client and returns the reply.
-pub(crate) fn dispatch(session: &mut Session, argv: &[Bytes]) -> Frame {
-    execute(&mut Context { session }, argv).unwrap_or_else(Frame::from)
+pub(crate) fn dispatch(
+    state: &mut State,
+    session: &mut Session,
+    now_ms: u64,
+    argv: &[Bytes],
+) -> Frame {
+    execute(
+        &mut Context {
+            state,
+            session,
+            now_ms,
+        },
+        argv,
+    )
+    .unwrap_or_else(Frame::from)
 }
 
 fn execute(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -144,27 +168,27 @@ fn execute(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::harness::{Harness, error};
 
     fn run(parts: &[&str]) -> Frame {
-        let argv: Vec<Bytes> = parts
-            .iter()
-            .map(|part| Bytes::copy_from_slice(part.as_bytes()))
-            .collect();
-        dispatch(&mut Session::new(1, String::new(), String::new()), &argv)
+        Harness::new().run(parts)
     }
 
-    fn error(text: &str) -> Frame {
-        Frame::Error(Bytes::copy_from_slice(text.as_bytes()))
+    fn check_table(table: &[Command]) {
+        assert!(table.windows(2).all(|pair| pair[0].name < pair[1].name));
+        for command in table {
+            assert!(
+                command.name.chars().all(|c| !c.is_uppercase()),
+                "{}",
+                command.name
+            );
+            check_table(command.subcommands);
+        }
     }
 
     #[test]
     fn table_is_sorted_and_unique() {
-        assert!(COMMANDS.windows(2).all(|pair| pair[0].name < pair[1].name));
-        assert!(
-            COMMANDS
-                .iter()
-                .all(|command| command.name.chars().all(|c| !c.is_uppercase()))
-        );
+        check_table(COMMANDS);
     }
 
     #[test]
