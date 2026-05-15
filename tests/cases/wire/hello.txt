@@ -17,3 +17,19 @@ HELLO 3 bogus\r\n
 @case unknown command after hello 3
 @resp3
 FOO bar\r\n
+
+@case quit closes the connection
+QUIT\r\nPING\r\n
+
+@case quit with arguments
+*2\r\n$4\r\nQUIT\r\n$1\r\nx\r\nPING\r\n
+
+@case pipelined requests before quit
+PING\r\nQUIT\r\nPING\r\n
+
+@case reset replies RESET
+RESET\r\nPING\r\n
+
+@case reset after hello 3
+@resp3
+RESET\r\nPING\r\n

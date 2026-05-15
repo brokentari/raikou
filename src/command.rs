@@ -28,6 +28,7 @@ pub(crate) struct Command {
     pub(crate) name: &'static str,
     pub(crate) arity: i32,
     pub(crate) handler: Handler,
+    pub(crate) subcommands: &'static [Command],
 }
 
 impl Command {
@@ -42,23 +43,51 @@ impl Command {
     }
 }
 
+fn container(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    Err(CommandError::unknown_command(argv))
+}
+
+const fn parent(name: &'static str, arity: i32, subcommands: &'static [Command]) -> Command {
+    Command {
+        name,
+        arity,
+        handler: container,
+        subcommands,
+    }
+}
+
 const fn command(name: &'static str, arity: i32, handler: Handler) -> Command {
     Command {
         name,
         arity,
         handler,
+        subcommands: &[],
     }
 }
 
-// Sorted by name: `find` binary-searches it.
+// Sorted by name: `find` binary-searches each table.
 static COMMANDS: &[Command] = &[
+    parent(
+        "client",
+        -2,
+        &[
+            command("getname", 2, connection::client_getname),
+            command("id", 2, connection::client_id),
+            command("info", 2, connection::client_info),
+            command("setinfo", 4, connection::client_setinfo),
+            command("setname", 3, connection::client_setname),
+        ],
+    ),
     command("echo", 2, connection::echo),
     command("hello", -1, connection::hello),
     command("ping", -1, connection::ping),
+    command("quit", -1, connection::quit),
+    command("reset", 1, connection::reset),
+    command("select", 2, connection::select),
 ];
 
-fn find(name: &[u8]) -> Option<&'static Command> {
-    let index = COMMANDS
+fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
+    let index = table
         .binary_search_by(|command| {
             command
                 .name
@@ -66,7 +95,7 @@ fn find(name: &[u8]) -> Option<&'static Command> {
                 .cmp(name.iter().map(u8::to_ascii_lowercase))
         })
         .ok()?;
-    Some(&COMMANDS[index])
+    Some(&table[index])
 }
 
 /// Runs the request `argv` for a client and returns the reply.
@@ -75,9 +104,21 @@ pub(crate) fn dispatch(session: &mut Session, argv: &[Bytes]) -> Frame {
 }
 
 fn execute(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
-    let command = find(&argv[0]).ok_or_else(|| CommandError::unknown_command(argv))?;
+    let mut command =
+        find(COMMANDS, &argv[0]).ok_or_else(|| CommandError::unknown_command(argv))?;
     if !command.accepts(argv.len()) {
         return Err(CommandError::WrongArity(command.name.to_owned()));
+    }
+    if !command.subcommands.is_empty() {
+        let parent = command;
+        command = find(parent.subcommands, &argv[1])
+            .ok_or_else(|| CommandError::unknown_subcommand(parent.name, &argv[1]))?;
+        if !command.accepts(argv.len()) {
+            return Err(CommandError::WrongArity(format!(
+                "{}|{}",
+                parent.name, command.name
+            )));
+        }
     }
     (command.handler)(context, argv)
 }
@@ -91,7 +132,7 @@ mod tests {
             .iter()
             .map(|part| Bytes::copy_from_slice(part.as_bytes()))
             .collect();
-        dispatch(&mut Session::new(1), &argv)
+        dispatch(&mut Session::new(1, String::new(), String::new()), &argv)
     }
 
     fn error(text: &str) -> Frame {

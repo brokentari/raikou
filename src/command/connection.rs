@@ -1,4 +1,4 @@
-//! Connection commands: `PING`, `ECHO` and `HELLO`.
+//! Connection commands: `PING`, `ECHO`, `HELLO`, `CLIENT`, `SELECT`, `QUIT` and `RESET`.
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -6,6 +6,7 @@ use crate::command::{Context, REDIS_VERSION};
 use crate::error::CommandError;
 use crate::number;
 use crate::resp::{Frame, Protocol};
+use crate::session::DATABASES;
 
 pub(super) fn ping(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
     match argv {
@@ -65,6 +66,114 @@ pub(super) fn hello(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, 
     Ok(hello_reply(context))
 }
 
+pub(super) fn client_id(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    Ok(Frame::Integer(context.session.id))
+}
+
+pub(super) fn client_getname(
+    context: &mut Context<'_>,
+    _: &[Bytes],
+) -> Result<Frame, CommandError> {
+    Ok(context
+        .session
+        .name
+        .clone()
+        .map_or(Frame::Null, Frame::bulk))
+}
+
+pub(super) fn client_setname(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    validate_client_name(&argv[2])?;
+    context.session.name = if argv[2].is_empty() {
+        None
+    } else {
+        Some(argv[2].clone())
+    };
+    Ok(Frame::ok())
+}
+
+pub(super) fn client_setinfo(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    let attribute = argv[2].to_ascii_lowercase();
+    if attribute != b"lib-name" && attribute != b"lib-ver" {
+        let mut text = BytesMut::from("ERR Unrecognized option '");
+        text.put_slice(&argv[2]);
+        text.put_u8(b'\'');
+        return Err(CommandError::other(text.freeze()));
+    }
+    if !is_plain_text(&argv[3]) {
+        let shown = String::from_utf8_lossy(&argv[2]);
+        return Err(CommandError::other(format!(
+            "ERR {shown} cannot contain spaces, newlines or special characters."
+        )));
+    }
+    if attribute == b"lib-name" {
+        context.session.lib_name = argv[3].clone();
+    } else {
+        context.session.lib_ver = argv[3].clone();
+    }
+    Ok(Frame::ok())
+}
+
+pub(super) fn client_info(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    let session = &*context.session;
+    let name = session
+        .name
+        .as_deref()
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    let resp = if session.protocol == Protocol::Resp3 {
+        3
+    } else {
+        2
+    };
+    // shortcut: the memory, buffer and traffic counters of Redis are not tracked
+    let line = format!(
+        "id={} addr={} laddr={} fd=-1 name={name} age=0 idle=0 flags=N db={} sub=0 psub=0 \
+         ssub=0 multi=-1 watch=0 cmd=client|info user=default redir=-1 resp={resp} \
+         lib-name={} lib-ver={}\n",
+        session.id,
+        session.peer,
+        session.local,
+        session.db,
+        String::from_utf8_lossy(&session.lib_name),
+        String::from_utf8_lossy(&session.lib_ver),
+    );
+    Ok(Frame::VerbatimString {
+        format: *b"txt",
+        data: Bytes::from(line),
+    })
+}
+
+pub(super) fn select(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let index = number::parse_i64(&argv[1]).ok_or(CommandError::NotInteger)?;
+    if i32::try_from(index).is_err() {
+        return Err(CommandError::other(
+            "ERR value is out of range, value must between -2147483648 and 2147483647",
+        ));
+    }
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|index| *index < DATABASES)
+        .ok_or_else(|| CommandError::other("ERR DB index is out of range"))?;
+    context.session.db = index;
+    Ok(Frame::ok())
+}
+
+pub(super) fn quit(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    context.session.closing = true;
+    Ok(Frame::ok())
+}
+
+pub(super) fn reset(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    context.session.reset();
+    Ok(Frame::simple("RESET"))
+}
+
 fn hello_syntax_error(option: &Bytes) -> CommandError {
     let mut text = BytesMut::from("ERR Syntax error in HELLO option '");
     text.put_slice(option);
@@ -99,8 +208,12 @@ fn authenticate(user: &Bytes, _password: &Bytes) -> Result<(), CommandError> {
     }
 }
 
+fn is_plain_text(text: &[u8]) -> bool {
+    text.iter().all(|byte| (b'!'..=b'~').contains(byte))
+}
+
 fn validate_client_name(name: &[u8]) -> Result<(), CommandError> {
-    if name.iter().all(|byte| (b'!'..=b'~').contains(byte)) {
+    if is_plain_text(name) {
         Ok(())
     } else {
         Err(CommandError::other(
@@ -142,7 +255,7 @@ mod tests {
 
     #[test]
     fn hello_reports_server_facts() {
-        let mut session = Session::new(7);
+        let mut session = Session::new(7, String::new(), String::new());
         let reply = run(&mut session, &["HELLO"]);
         assert_eq!(field(&reply, "server"), &Frame::bulk("redis"));
         assert_eq!(field(&reply, "version"), &Frame::bulk(REDIS_VERSION));
@@ -155,7 +268,7 @@ mod tests {
 
     #[test]
     fn hello_switches_protocol() {
-        let mut session = Session::new(1);
+        let mut session = Session::new(1, String::new(), String::new());
         let reply = run(&mut session, &["HELLO", "3"]);
         assert_eq!(field(&reply, "proto"), &Frame::Integer(3));
         assert_eq!(session.protocol, Protocol::Resp3);
@@ -165,7 +278,7 @@ mod tests {
 
     #[test]
     fn hello_sets_and_clears_the_client_name() {
-        let mut session = Session::new(1);
+        let mut session = Session::new(1, String::new(), String::new());
         run(&mut session, &["HELLO", "3", "SETNAME", "worker"]);
         assert_eq!(session.name, Some(Bytes::from("worker")));
         run(&mut session, &["HELLO", "3", "SETNAME", ""]);
@@ -174,7 +287,7 @@ mod tests {
 
     #[test]
     fn hello_rejects_bad_input_without_changing_the_session() {
-        let mut session = Session::new(1);
+        let mut session = Session::new(1, String::new(), String::new());
         let cases = [
             (
                 vec!["HELLO", "x"],
@@ -211,14 +324,109 @@ mod tests {
 
     #[test]
     fn hello_accepts_the_default_user() {
-        let mut session = Session::new(1);
+        let mut session = Session::new(1, String::new(), String::new());
         let reply = run(&mut session, &["HELLO", "3", "AUTH", "default", "anything"]);
         assert_eq!(field(&reply, "proto"), &Frame::Integer(3));
     }
 
     #[test]
+    fn client_name_round_trip() {
+        let mut session = Session::new(9, String::new(), String::new());
+        assert_eq!(run(&mut session, &["CLIENT", "GETNAME"]), Frame::Null);
+        assert_eq!(
+            run(&mut session, &["CLIENT", "SETNAME", "app"]),
+            Frame::ok()
+        );
+        assert_eq!(
+            run(&mut session, &["CLIENT", "GETNAME"]),
+            Frame::bulk("app")
+        );
+        assert_eq!(run(&mut session, &["CLIENT", "SETNAME", ""]), Frame::ok());
+        assert_eq!(run(&mut session, &["CLIENT", "GETNAME"]), Frame::Null);
+        assert_eq!(run(&mut session, &["CLIENT", "ID"]), Frame::Integer(9));
+    }
+
+    #[test]
+    fn client_setinfo_stores_library_details() {
+        let mut session = Session::new(1, String::new(), String::new());
+        assert_eq!(
+            run(&mut session, &["CLIENT", "SETINFO", "lib-name", "lib"]),
+            Frame::ok()
+        );
+        assert_eq!(
+            run(&mut session, &["CLIENT", "SETINFO", "LIB-VER", "1.0"]),
+            Frame::ok()
+        );
+        let Frame::VerbatimString { data, .. } = run(&mut session, &["CLIENT", "INFO"]) else {
+            panic!("CLIENT INFO is a verbatim string");
+        };
+        let text = String::from_utf8_lossy(&data).into_owned();
+        assert!(text.contains("lib-name=lib lib-ver=1.0\n"), "{text}");
+        assert_eq!(
+            run(&mut session, &["CLIENT", "SETINFO", "foo", "x"]),
+            error("ERR Unrecognized option 'foo'")
+        );
+    }
+
+    #[test]
+    fn client_errors_name_the_subcommand() {
+        let mut session = Session::new(1, String::new(), String::new());
+        assert_eq!(
+            run(&mut session, &["CLIENT", "ID", "x"]),
+            error("ERR wrong number of arguments for 'client|id' command")
+        );
+        assert_eq!(
+            run(&mut session, &["CLIENT", "FOO"]),
+            error("ERR unknown subcommand 'FOO'. Try CLIENT HELP.")
+        );
+        assert_eq!(
+            run(&mut session, &["CLIENT"]),
+            error("ERR wrong number of arguments for 'client' command")
+        );
+    }
+
+    #[test]
+    fn select_checks_the_index() {
+        let mut session = Session::new(1, String::new(), String::new());
+        assert_eq!(run(&mut session, &["SELECT", "15"]), Frame::ok());
+        assert_eq!(session.db, 15);
+        assert_eq!(
+            run(&mut session, &["SELECT", "16"]),
+            error("ERR DB index is out of range")
+        );
+        assert_eq!(
+            run(&mut session, &["SELECT", "-1"]),
+            error("ERR DB index is out of range")
+        );
+        assert_eq!(
+            run(&mut session, &["SELECT", "x"]),
+            error("ERR value is not an integer or out of range")
+        );
+        assert_eq!(session.db, 15);
+    }
+
+    #[test]
+    fn quit_marks_the_session_closing() {
+        let mut session = Session::new(1, String::new(), String::new());
+        assert_eq!(run(&mut session, &["QUIT"]), Frame::ok());
+        assert!(session.closing);
+    }
+
+    #[test]
+    fn reset_restores_the_connection_state() {
+        let mut session = Session::new(1, String::new(), String::new());
+        run(&mut session, &["HELLO", "3", "SETNAME", "n"]);
+        run(&mut session, &["SELECT", "2"]);
+        assert_eq!(run(&mut session, &["RESET"]), Frame::simple("RESET"));
+        assert_eq!(
+            (session.protocol, session.name.clone(), session.db),
+            (Protocol::Resp2, None, 0)
+        );
+    }
+
+    #[test]
     fn echo_and_ping_reply() {
-        let mut session = Session::new(1);
+        let mut session = Session::new(1, String::new(), String::new());
         assert_eq!(run(&mut session, &["PING"]), Frame::simple("PONG"));
         assert_eq!(run(&mut session, &["PING", "x"]), Frame::bulk("x"));
         assert_eq!(run(&mut session, &["ECHO", "x"]), Frame::bulk("x"));

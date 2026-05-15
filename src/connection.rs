@@ -16,7 +16,9 @@ const MAX_INPUT_LEN: usize = 1 << 30;
 pub(crate) async fn run(mut stream: TcpStream, id: i64) -> io::Result<()> {
     let mut input = BytesMut::with_capacity(4096);
     let mut output = BytesMut::new();
-    let mut session = Session::new(id);
+    let peer = stream.peer_addr()?.to_string();
+    let local = stream.local_addr()?.to_string();
+    let mut session = Session::new(id, peer, local);
     loop {
         if stream.read_buf(&mut input).await? == 0 {
             return Ok(());
@@ -29,6 +31,7 @@ pub(crate) async fn run(mut stream: TcpStream, id: i64) -> io::Result<()> {
                     if !argv.is_empty() {
                         let reply = command::dispatch(&mut session, &argv);
                         resp::encode(&reply, session.protocol, &mut output);
+                        close = session.closing;
                     }
                 }
                 Ok(None) => break,

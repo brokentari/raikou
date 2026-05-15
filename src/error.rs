@@ -20,6 +20,15 @@ pub enum CommandError {
     },
     /// The command has too few or too many arguments; holds the command name.
     WrongArity(String),
+    /// The subcommand name is not known to its command.
+    UnknownSubcommand {
+        /// The name as the client sent it, cut to the preview limit.
+        name: Bytes,
+        /// The command that owns the subcommands, in upper case.
+        command: String,
+    },
+    /// An argument is not a 64-bit integer.
+    NotInteger,
     /// The client asked for a RESP version the server lacks.
     NoProto,
     /// Any other error; holds the full text, including the `ERR` word.
@@ -52,6 +61,15 @@ impl CommandError {
         Self::Other(text.into())
     }
 
+    /// Builds the unknown-subcommand error for `command` and the name `sub` a client sent.
+    #[must_use]
+    pub fn unknown_subcommand(command: &str, sub: &Bytes) -> Self {
+        Self::UnknownSubcommand {
+            name: sub.slice(..sub.len().min(MAX_PREVIEW_LEN)),
+            command: command.to_ascii_uppercase(),
+        }
+    }
+
     fn message(&self) -> Bytes {
         match self {
             Self::UnknownCommand { name, args } => {
@@ -65,6 +83,14 @@ impl CommandError {
                 }
                 text.freeze()
             }
+            Self::UnknownSubcommand { name, command } => {
+                let mut text = BytesMut::new();
+                text.put_slice(b"ERR unknown subcommand '");
+                text.put_slice(name);
+                text.put_slice(format!("'. Try {command} HELP.").as_bytes());
+                text.freeze()
+            }
+            Self::NotInteger => Bytes::from_static(b"ERR value is not an integer or out of range"),
             Self::NoProto => Bytes::from_static(b"NOPROTO unsupported protocol version"),
             Self::Other(text) => text.clone(),
             Self::WrongArity(name) => Bytes::from(format!(
@@ -136,7 +162,20 @@ mod tests {
     }
 
     #[test]
+    fn unknown_subcommand_names_the_command() {
+        let error = CommandError::unknown_subcommand("client", &Bytes::from("foo"));
+        assert_eq!(
+            error.to_string(),
+            "ERR unknown subcommand 'foo'. Try CLIENT HELP."
+        );
+    }
+
+    #[test]
     fn fixed_texts() {
+        assert_eq!(
+            CommandError::NotInteger.to_string(),
+            "ERR value is not an integer or out of range"
+        );
         assert_eq!(
             CommandError::NoProto.to_string(),
             "NOPROTO unsupported protocol version"
