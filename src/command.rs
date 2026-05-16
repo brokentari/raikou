@@ -80,6 +80,7 @@ const fn command(name: &'static str, arity: i32, handler: Handler) -> Command {
 
 // Sorted by name: `find` binary-searches each table.
 static COMMANDS: &[Command] = &[
+    command("append", 3, strings::append),
     command("auth", -2, connection::auth),
     parent(
         "client",
@@ -105,12 +106,16 @@ static COMMANDS: &[Command] = &[
     command("get", 2, strings::get),
     command("getdel", 2, strings::getdel),
     command("getex", -2, strings::getex),
+    command("getrange", 4, strings::getrange),
     command("getset", 3, strings::getset),
     command("hello", -1, connection::hello),
     command("incr", 2, strings::incr),
     command("incrby", 3, strings::incrby),
     command("incrbyfloat", 3, strings::incrbyfloat),
     command("info", -1, server::info),
+    command("mget", -2, strings::mget),
+    command("mset", -3, strings::mset),
+    command("msetnx", -3, strings::msetnx),
     command("ping", -1, connection::ping),
     command("psetex", 4, strings::psetex),
     command("quit", -1, connection::quit),
@@ -119,6 +124,8 @@ static COMMANDS: &[Command] = &[
     command("set", -3, strings::set),
     command("setex", 4, strings::setex),
     command("setnx", 3, strings::setnx),
+    command("setrange", 4, strings::setrange),
+    command("strlen", 2, strings::strlen),
 ];
 
 fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {

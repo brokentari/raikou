@@ -73,6 +73,13 @@ impl Store {
             .map(|entry| &entry.value)
     }
 
+    /// Returns the value under `key` for in-place change; an expiry stays as it is.
+    pub(crate) fn get_mut(&mut self, db: usize, key: &[u8], now_ms: u64) -> Option<&mut Value> {
+        self.databases[db]
+            .live(key, now_ms)
+            .map(|entry| &mut entry.value)
+    }
+
     /// Stores `value` under `key`, replacing any value and clearing any expiry.
     pub(crate) fn set(&mut self, db: usize, key: Bytes, value: Value) {
         self.put(db, key, value, Ttl::Clear, 0);
@@ -170,6 +177,16 @@ mod tests {
         assert!(store.remove(0, b"k", 0));
         assert!(!store.remove(0, b"k", 0));
         assert_eq!(store.get(0, b"k", 0), None);
+    }
+
+    #[test]
+    fn get_mut_changes_the_value_and_keeps_the_deadline() {
+        let mut store = Store::default();
+        store.put(0, Bytes::from("k"), text("a"), Ttl::At(50), 0);
+        *store.get_mut(0, b"k", 0).expect("present") = text("b");
+        assert_eq!(deadline(&mut store, b"k", 0), (true, Some(50)));
+        assert_eq!(store.get(0, b"k", 0), Some(&text("b")));
+        assert!(store.get_mut(0, b"k", 50).is_none());
     }
 
     #[test]

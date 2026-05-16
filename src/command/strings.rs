@@ -1,6 +1,6 @@
 //! String commands.
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use crate::command::Context;
 use crate::error::CommandError;
@@ -43,6 +43,21 @@ fn as_str(value: &Value) -> Result<&Bytes, CommandError> {
     match value {
         Value::Str(data) => Ok(data),
     }
+}
+
+const MAX_STRING_LEN: usize = 512 * 1024 * 1024;
+
+fn too_long() -> CommandError {
+    CommandError::other("ERR string exceeds maximum allowed size (proto-max-bulk-len)")
+}
+
+fn edit(data: &mut Bytes, change: impl FnOnce(&mut BytesMut)) {
+    let mut buffer = match std::mem::take(data).try_into_mut() {
+        Ok(buffer) => buffer,
+        Err(shared) => BytesMut::from(&shared[..]),
+    };
+    change(&mut buffer);
+    *data = buffer.freeze();
 }
 
 fn deadline(
@@ -327,6 +342,173 @@ pub(super) fn incrbyfloat(
 
 fn infinite_sum() -> CommandError {
     CommandError::other("ERR increment would produce NaN or Infinity")
+}
+
+pub(super) fn append(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let Some(value) = state.store.get_mut(db, &argv[1], now) else {
+        state
+            .store
+            .set(db, argv[1].clone(), Value::Str(argv[2].clone()));
+        return Ok(Frame::Integer(len_frame(argv[2].len())));
+    };
+    let Value::Str(data) = value;
+    if data.len() + argv[2].len() > MAX_STRING_LEN {
+        return Err(too_long());
+    }
+    edit(data, |buffer| buffer.extend_from_slice(&argv[2]));
+    Ok(Frame::Integer(len_frame(data.len())))
+}
+
+fn len_frame(len: usize) -> i64 {
+    i64::try_from(len).unwrap_or(i64::MAX)
+}
+
+pub(super) fn strlen(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    match state.store.get(session.db, &argv[1], *now_ms) {
+        Some(value) => Ok(Frame::Integer(len_frame(as_str(value)?.len()))),
+        None => Ok(Frame::Integer(0)),
+    }
+}
+
+pub(super) fn getrange(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let (start, end) = (amount(&argv[2])?, amount(&argv[3])?);
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let Some(value) = state.store.get(session.db, &argv[1], *now_ms) else {
+        return Ok(Frame::bulk(""));
+    };
+    let data = as_str(value)?;
+    let len = len_frame(data.len());
+    if (start < 0 && end < 0 && start > end) || len == 0 {
+        return Ok(Frame::bulk(""));
+    }
+    let start = if start < 0 { len + start } else { start }.max(0);
+    let end = if end < 0 { len + end } else { end }.max(0).min(len - 1);
+    if start > end {
+        return Ok(Frame::bulk(""));
+    }
+    let (start, end) = (
+        usize::try_from(start).unwrap_or(0),
+        usize::try_from(end).unwrap_or(0),
+    );
+    Ok(Frame::bulk(data.slice(start..=end)))
+}
+
+pub(super) fn setrange(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let offset = amount(&argv[2])?;
+    let offset =
+        usize::try_from(offset).map_err(|_| CommandError::other("ERR offset is out of range"))?;
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let piece = &argv[3];
+    let existing = state
+        .store
+        .get(db, &argv[1], now)
+        .map(as_str)
+        .transpose()?
+        .map(Bytes::len);
+    if piece.is_empty() {
+        return Ok(Frame::Integer(len_frame(existing.unwrap_or(0))));
+    }
+    if offset
+        .checked_add(piece.len())
+        .is_none_or(|total| total > MAX_STRING_LEN)
+    {
+        return Err(too_long());
+    }
+    let change = |buffer: &mut BytesMut| {
+        if buffer.len() < offset + piece.len() {
+            buffer.resize(offset + piece.len(), 0);
+        }
+        buffer[offset..offset + piece.len()].copy_from_slice(piece);
+    };
+    if let Some(value) = state.store.get_mut(db, &argv[1], now) {
+        let Value::Str(data) = value;
+        edit(data, change);
+        return Ok(Frame::Integer(len_frame(data.len())));
+    }
+    let mut buffer = BytesMut::new();
+    change(&mut buffer);
+    let total = buffer.len();
+    state
+        .store
+        .set(db, argv[1].clone(), Value::Str(buffer.freeze()));
+    Ok(Frame::Integer(len_frame(total)))
+}
+
+pub(super) fn mget(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let values = argv[1..]
+        .iter()
+        .map(|key| match state.store.get(session.db, key, *now_ms) {
+            Some(Value::Str(data)) => Frame::bulk(data.clone()),
+            None => Frame::Null,
+        })
+        .collect();
+    Ok(Frame::Array(values))
+}
+
+fn mset_generic(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+    name: &str,
+    only_new: bool,
+) -> Result<Frame, CommandError> {
+    if argv.len().is_multiple_of(2) {
+        return Err(CommandError::WrongArity(name.to_owned()));
+    }
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let (pairs, _) = argv[1..].as_chunks::<2>();
+    if only_new
+        && pairs
+            .iter()
+            .any(|[key, _]| state.store.get(db, key, now).is_some())
+    {
+        return Ok(Frame::Integer(0));
+    }
+    for [key, value] in pairs {
+        state.store.set(db, key.clone(), Value::Str(value.clone()));
+    }
+    Ok(if only_new {
+        Frame::Integer(1)
+    } else {
+        Frame::ok()
+    })
+}
+
+pub(super) fn mset(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    mset_generic(context, argv, "mset", false)
+}
+
+pub(super) fn msetnx(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    mset_generic(context, argv, "msetnx", true)
 }
 
 pub(super) fn getset(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -635,6 +817,109 @@ mod tests {
         let infinite = error("ERR increment would produce NaN or Infinity");
         assert_eq!(client.run(&["INCRBYFLOAT", "n", "inf"]), infinite);
         assert_eq!(client.run(&["INCRBYFLOAT", "n", "-inf"]), infinite);
+    }
+
+    #[test]
+    fn append_and_strlen() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["STRLEN", "k"]), Frame::Integer(0));
+        assert_eq!(client.run(&["APPEND", "k", "ab"]), Frame::Integer(2));
+        assert_eq!(client.run(&["APPEND", "k", "cd"]), Frame::Integer(4));
+        assert_eq!(client.run(&["APPEND", "k", ""]), Frame::Integer(4));
+        assert_eq!(client.run(&["GET", "k"]), Frame::bulk("abcd"));
+        assert_eq!(client.run(&["STRLEN", "k"]), Frame::Integer(4));
+    }
+
+    #[test]
+    fn append_keeps_the_expiry() {
+        let mut client = Harness::new();
+        let now = client.now_ms;
+        client.run(&["SET", "k", "a", "PX", "100"]);
+        client.run(&["APPEND", "k", "b"]);
+        client.now_ms = now + 100;
+        assert_eq!(client.run(&["GET", "k"]), Frame::Null);
+    }
+
+    #[test]
+    fn getrange_follows_redis_index_rules() {
+        let mut client = Harness::new();
+        client.run(&["SET", "k", "Hello World"]);
+        let cases = [
+            ("0", "4", "Hello"),
+            ("-5", "-1", "World"),
+            ("0", "-1", "Hello World"),
+            ("5", "3", ""),
+            ("-1", "-5", ""),
+            ("-100", "2", "Hel"),
+            ("6", "100", "World"),
+            ("100", "200", ""),
+            ("-100", "-50", "H"),
+        ];
+        for (start, end, expected) in cases {
+            assert_eq!(
+                client.run(&["GETRANGE", "k", start, end]),
+                Frame::bulk(expected),
+                "{start} {end}"
+            );
+        }
+        assert_eq!(
+            client.run(&["GETRANGE", "missing", "0", "1"]),
+            Frame::bulk("")
+        );
+        assert_eq!(
+            client.run(&["GETRANGE", "k", "a", "1"]),
+            error("ERR value is not an integer or out of range")
+        );
+    }
+
+    #[test]
+    fn setrange_pads_with_zero_bytes() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["SETRANGE", "k", "3", "ab"]), Frame::Integer(5));
+        assert_eq!(client.run(&["GET", "k"]), Frame::bulk(&b"\0\0\0ab"[..]));
+        assert_eq!(client.run(&["SETRANGE", "k", "1", "XY"]), Frame::Integer(5));
+        assert_eq!(client.run(&["GET", "k"]), Frame::bulk(&b" XYab"[..]));
+        assert_eq!(
+            client.run(&["SETRANGE", "none", "5", ""]),
+            Frame::Integer(0)
+        );
+        assert_eq!(client.run(&["GET", "none"]), Frame::Null);
+    }
+
+    #[test]
+    fn setrange_limits() {
+        let mut client = Harness::new();
+        assert_eq!(
+            client.run(&["SETRANGE", "k", "-1", "a"]),
+            error("ERR offset is out of range")
+        );
+        assert_eq!(
+            client.run(&["SETRANGE", "k", "536870912", "a"]),
+            error("ERR string exceeds maximum allowed size (proto-max-bulk-len)")
+        );
+    }
+
+    #[test]
+    fn mget_mset_msetnx() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["MSET", "a", "1", "b", "2"]), Frame::ok());
+        assert_eq!(
+            client.run(&["MGET", "a", "x", "b"]),
+            Frame::Array(vec![Frame::bulk("1"), Frame::Null, Frame::bulk("2")])
+        );
+        assert_eq!(
+            client.run(&["MSETNX", "c", "3", "a", "9"]),
+            Frame::Integer(0)
+        );
+        assert_eq!(client.run(&["GET", "c"]), Frame::Null);
+        assert_eq!(
+            client.run(&["MSETNX", "c", "3", "d", "4"]),
+            Frame::Integer(1)
+        );
+        assert_eq!(
+            client.run(&["MSET", "a", "1", "b"]),
+            error("ERR wrong number of arguments for 'mset' command")
+        );
     }
 
     #[test]
