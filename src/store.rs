@@ -147,6 +147,28 @@ impl Store {
             .is_some_and(|entry| !entry.is_expired(now_ms))
     }
 
+    /// Removes a live key and returns its value and deadline.
+    pub(crate) fn take(
+        &mut self,
+        db: usize,
+        key: &[u8],
+        now_ms: u64,
+    ) -> Option<(Value, Option<u64>)> {
+        self.databases[db].live(key, now_ms)?;
+        let entry = self.databases[db].remove_entry(key)?;
+        Some((entry.value, entry.expires_at))
+    }
+
+    /// Counts the keys in one database, including expired keys not yet removed.
+    pub(crate) fn len(&self, db: usize) -> usize {
+        self.databases[db].entries.len()
+    }
+
+    /// Deletes every key in one database.
+    pub(crate) fn flush_db(&mut self, db: usize) {
+        self.databases[db] = Database::default();
+    }
+
     /// Deletes every key in every database.
     pub(crate) fn flush_all(&mut self) {
         for database in &mut self.databases {
@@ -187,6 +209,28 @@ mod tests {
         assert_eq!(deadline(&mut store, b"k", 0), (true, Some(50)));
         assert_eq!(store.get(0, b"k", 0), Some(&text("b")));
         assert!(store.get_mut(0, b"k", 50).is_none());
+    }
+
+    #[test]
+    fn take_moves_value_and_deadline_out() {
+        let mut store = Store::default();
+        store.put(0, Bytes::from("k"), text("v"), Ttl::At(90), 0);
+        assert_eq!(store.take(0, b"k", 0), Some((text("v"), Some(90))));
+        assert_eq!(store.take(0, b"k", 0), None);
+        assert!(store.databases[0].expires.is_empty());
+        store.put(0, Bytes::from("e"), text("v"), Ttl::At(5), 0);
+        assert_eq!(store.take(0, b"e", 5), None);
+    }
+
+    #[test]
+    fn len_and_flush_db() {
+        let mut store = Store::default();
+        store.set(0, Bytes::from("a"), text("v"));
+        store.set(0, Bytes::from("b"), text("v"));
+        store.set(1, Bytes::from("c"), text("v"));
+        assert_eq!((store.len(0), store.len(1)), (2, 1));
+        store.flush_db(0);
+        assert_eq!((store.len(0), store.len(1)), (0, 1));
     }
 
     #[test]

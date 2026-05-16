@@ -7,3 +7,12 @@ use bytes::Bytes;
 pub(crate) enum Value {
     Str(Bytes),
 }
+
+impl Value {
+    /// The name `TYPE` reports for this kind of value.
+    pub(crate) fn type_name(&self) -> &'static str {
+        match self {
+            Self::Str(_) => "string",
+        }
+    }
+}

@@ -33,12 +33,29 @@ pub(super) fn info(_: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, Command
     })
 }
 
-pub(super) fn flushall(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+fn check_flush_mode(argv: &[Bytes]) -> Result<(), CommandError> {
     match argv {
-        [_] => {}
-        [_, mode] if mode.eq_ignore_ascii_case(b"async") || mode.eq_ignore_ascii_case(b"sync") => {}
-        _ => return Err(CommandError::Syntax),
+        [_] => Ok(()),
+        [_, mode] if mode.eq_ignore_ascii_case(b"async") || mode.eq_ignore_ascii_case(b"sync") => {
+            Ok(())
+        }
+        _ => Err(CommandError::Syntax),
     }
+}
+
+pub(super) fn dbsize(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    let count = context.state.store.len(context.session.db);
+    Ok(Frame::Integer(i64::try_from(count).unwrap_or(i64::MAX)))
+}
+
+pub(super) fn flushdb(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    check_flush_mode(argv)?;
+    context.state.store.flush_db(context.session.db);
+    Ok(Frame::ok())
+}
+
+pub(super) fn flushall(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    check_flush_mode(argv)?;
     // shortcut: FLUSHALL holds the lock until every database is empty, as Redis does
     context.state.store.flush_all();
     Ok(Frame::ok())
@@ -118,6 +135,24 @@ mod tests {
         assert_eq!(client.run(&["GET", "a"]), Frame::Null);
         assert_eq!(
             client.run(&["FLUSHALL", "later"]),
+            crate::command::harness::error("ERR syntax error")
+        );
+    }
+
+    #[test]
+    fn dbsize_and_flushdb_work_on_one_database() {
+        let mut client = Harness::new();
+        client.run(&["MSET", "a", "1", "b", "2"]);
+        client.run(&["SELECT", "1"]);
+        client.run(&["SET", "c", "3"]);
+        assert_eq!(client.run(&["DBSIZE"]), Frame::Integer(1));
+        assert_eq!(client.run(&["FLUSHDB"]), Frame::ok());
+        assert_eq!(client.run(&["DBSIZE"]), Frame::Integer(0));
+        client.run(&["SELECT", "0"]);
+        assert_eq!(client.run(&["DBSIZE"]), Frame::Integer(2));
+        assert_eq!(client.run(&["FLUSHDB", "SYNC"]), Frame::ok());
+        assert_eq!(
+            client.run(&["FLUSHDB", "x"]),
             crate::command::harness::error("ERR syntax error")
         );
     }

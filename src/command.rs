@@ -98,11 +98,14 @@ static COMMANDS: &[Command] = &[
         command("docs", -2, server::command_docs),
     ]),
     parent("config", -2, &[command("get", -3, server::config_get)]),
+    command("dbsize", 1, server::dbsize),
     command("decr", 2, strings::decr),
     command("decrby", 3, strings::decrby),
     command("del", -2, keys::del),
     command("echo", 2, connection::echo),
+    command("exists", -2, keys::exists),
     command("flushall", -1, server::flushall),
+    command("flushdb", -1, server::flushdb),
     command("get", 2, strings::get),
     command("getdel", 2, strings::getdel),
     command("getex", -2, strings::getex),
@@ -119,6 +122,8 @@ static COMMANDS: &[Command] = &[
     command("ping", -1, connection::ping),
     command("psetex", 4, strings::psetex),
     command("quit", -1, connection::quit),
+    command("rename", 3, keys::rename),
+    command("renamenx", 3, keys::renamenx),
     command("reset", 1, connection::reset),
     command("select", 2, connection::select),
     command("set", -3, strings::set),
@@ -126,6 +131,9 @@ static COMMANDS: &[Command] = &[
     command("setnx", 3, strings::setnx),
     command("setrange", 4, strings::setrange),
     command("strlen", 2, strings::strlen),
+    command("touch", -2, keys::touch),
+    command("type", 2, keys::type_of),
+    command("unlink", -2, keys::unlink),
 ];
 
 fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
