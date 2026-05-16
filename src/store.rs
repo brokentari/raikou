@@ -1,6 +1,6 @@
 //! All databases and their keys.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use bytes::Bytes;
 
@@ -19,16 +19,48 @@ impl Entry {
     }
 }
 
+/// What happens to a key's deadline when its value is replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ttl {
+    Clear,
+    Keep,
+    At(u64),
+}
+
+#[derive(Debug, Default)]
+struct Database {
+    entries: HashMap<Bytes, Entry>,
+    expires: BTreeSet<(u64, Bytes)>,
+}
+
+impl Database {
+    fn remove_entry(&mut self, key: &[u8]) -> Option<Entry> {
+        let (key, entry) = self.entries.remove_entry(key)?;
+        if let Some(deadline) = entry.expires_at {
+            self.expires.remove(&(deadline, key));
+        }
+        Some(entry)
+    }
+
+    fn live(&mut self, key: &[u8], now_ms: u64) -> Option<&mut Entry> {
+        if self.entries.get(key)?.is_expired(now_ms) {
+            self.remove_entry(key);
+            return None;
+        }
+        self.entries.get_mut(key)
+    }
+}
+
 /// The keyspace: a fixed number of databases.
 #[derive(Debug)]
 pub(crate) struct Store {
-    databases: Vec<HashMap<Bytes, Entry>>,
+    databases: Vec<Database>,
 }
 
 impl Default for Store {
     fn default() -> Self {
         Self {
-            databases: (0..DATABASES).map(|_| HashMap::new()).collect(),
+            databases: (0..DATABASES).map(|_| Database::default()).collect(),
         }
     }
 }
@@ -36,36 +68,82 @@ impl Default for Store {
 impl Store {
     /// Returns the value under `key`, dropping the key first if it has expired.
     pub(crate) fn get(&mut self, db: usize, key: &[u8], now_ms: u64) -> Option<&Value> {
-        let entries = &mut self.databases[db];
-        if entries.get(key)?.is_expired(now_ms) {
-            entries.remove(key);
-            return None;
-        }
-        entries.get(key).map(|entry| &entry.value)
+        self.databases[db]
+            .live(key, now_ms)
+            .map(|entry| &entry.value)
     }
 
     /// Stores `value` under `key`, replacing any value and clearing any expiry.
     pub(crate) fn set(&mut self, db: usize, key: Bytes, value: Value) {
-        self.databases[db].insert(
+        self.put(db, key, value, Ttl::Clear, 0);
+    }
+
+    /// Stores `value` under `key`, replacing any value, and applies `ttl` to its deadline.
+    pub(crate) fn put(&mut self, db: usize, key: Bytes, value: Value, ttl: Ttl, now_ms: u64) {
+        let database = &mut self.databases[db];
+        let deadline = match ttl {
+            Ttl::Clear => None,
+            Ttl::At(deadline) => Some(deadline),
+            Ttl::Keep => database
+                .live(&key, now_ms)
+                .and_then(|entry| entry.expires_at),
+        };
+        database.remove_entry(&key);
+        if let Some(deadline) = deadline {
+            database.expires.insert((deadline, key.clone()));
+        }
+        database.entries.insert(
             key,
             Entry {
                 value,
-                expires_at: None,
+                expires_at: deadline,
             },
         );
+    }
+
+    /// Sets or, with `None`, removes the deadline of a live key; returns whether it changed.
+    pub(crate) fn set_deadline(
+        &mut self,
+        db: usize,
+        key: &[u8],
+        deadline: Option<u64>,
+        now_ms: u64,
+    ) -> bool {
+        let database = &mut self.databases[db];
+        let Some(entry) = database.live(key, now_ms) else {
+            return false;
+        };
+        let old = std::mem::replace(&mut entry.expires_at, deadline);
+        if old == deadline {
+            return false;
+        }
+        let key = database
+            .entries
+            .get_key_value(key)
+            .map(|(key, _)| key.clone());
+        let Some(key) = key else {
+            return false;
+        };
+        if let Some(old) = old {
+            database.expires.remove(&(old, key.clone()));
+        }
+        if let Some(deadline) = deadline {
+            database.expires.insert((deadline, key));
+        }
+        true
     }
 
     /// Deletes `key`; returns whether a live key was there.
     pub(crate) fn remove(&mut self, db: usize, key: &[u8], now_ms: u64) -> bool {
         self.databases[db]
-            .remove(key)
+            .remove_entry(key)
             .is_some_and(|entry| !entry.is_expired(now_ms))
     }
 
     /// Deletes every key in every database.
     pub(crate) fn flush_all(&mut self) {
-        for entries in &mut self.databases {
-            entries.clear();
+        for database in &mut self.databases {
+            *database = Database::default();
         }
     }
 }
@@ -73,6 +151,11 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deadline(store: &mut Store, key: &[u8], now_ms: u64) -> (bool, Option<u64>) {
+        let entry = store.databases[0].live(key, now_ms);
+        (entry.is_some(), entry.and_then(|entry| entry.expires_at))
+    }
 
     fn text(value: &str) -> Value {
         Value::Str(Bytes::copy_from_slice(value.as_bytes()))
@@ -98,43 +181,64 @@ mod tests {
     }
 
     #[test]
-    fn set_clears_the_expiry() {
+    fn ttl_clear_keep_and_at() {
         let mut store = Store::default();
-        store.set(0, Bytes::from("k"), text("old"));
-        store.databases[0]
-            .get_mut(&b"k"[..])
-            .expect("entry")
-            .expires_at = Some(10);
-        store.set(0, Bytes::from("k"), text("new"));
-        assert_eq!(store.get(0, b"k", 100), Some(&text("new")));
+        store.put(0, Bytes::from("k"), text("a"), Ttl::At(100), 0);
+        assert_eq!(deadline(&mut store, b"k", 0), (true, Some(100)));
+        store.put(0, Bytes::from("k"), text("b"), Ttl::Keep, 0);
+        assert_eq!(deadline(&mut store, b"k", 0), (true, Some(100)));
+        store.put(0, Bytes::from("k"), text("c"), Ttl::Clear, 0);
+        assert_eq!(deadline(&mut store, b"k", 0), (true, None));
+        assert_eq!(deadline(&mut store, b"missing", 0), (false, None));
+    }
+
+    #[test]
+    fn keep_ignores_the_deadline_of_an_expired_key() {
+        let mut store = Store::default();
+        store.put(0, Bytes::from("k"), text("a"), Ttl::At(10), 0);
+        store.put(0, Bytes::from("k"), text("b"), Ttl::Keep, 10);
+        assert_eq!(deadline(&mut store, b"k", 10), (true, None));
     }
 
     #[test]
     fn expired_keys_are_gone() {
         let mut store = Store::default();
-        store.set(0, Bytes::from("k"), text("v"));
-        store.databases[0]
-            .get_mut(&b"k"[..])
-            .expect("entry")
-            .expires_at = Some(10);
+        store.put(0, Bytes::from("k"), text("v"), Ttl::At(10), 0);
         assert_eq!(store.get(0, b"k", 9), Some(&text("v")));
         assert_eq!(store.get(0, b"k", 10), None);
-        assert!(store.databases[0].is_empty());
-        store.set(0, Bytes::from("j"), text("v"));
-        store.databases[0]
-            .get_mut(&b"j"[..])
-            .expect("entry")
-            .expires_at = Some(10);
+        assert!(store.databases[0].entries.is_empty());
+        assert!(store.databases[0].expires.is_empty());
+        store.put(0, Bytes::from("j"), text("v"), Ttl::At(10), 0);
         assert!(!store.remove(0, b"j", 10));
+    }
+
+    #[test]
+    fn deadline_changes_keep_the_index_in_step() {
+        let mut store = Store::default();
+        store.set(0, Bytes::from("k"), text("v"));
+        assert!(store.set_deadline(0, b"k", Some(50), 0));
+        assert!(!store.set_deadline(0, b"k", Some(50), 0));
+        assert_eq!(store.databases[0].expires.len(), 1);
+        assert!(store.set_deadline(0, b"k", Some(60), 0));
+        assert_eq!(
+            store.databases[0].expires.iter().next().map(|(at, _)| *at),
+            Some(60)
+        );
+        assert!(store.set_deadline(0, b"k", None, 0));
+        assert!(store.databases[0].expires.is_empty());
+        assert!(!store.set_deadline(0, b"missing", Some(5), 0));
+        store.remove(0, b"k", 0);
+        assert!(store.databases[0].expires.is_empty());
     }
 
     #[test]
     fn flush_all_empties_every_database() {
         let mut store = Store::default();
-        store.set(0, Bytes::from("a"), text("v"));
+        store.put(0, Bytes::from("a"), text("v"), Ttl::At(5), 0);
         store.set(5, Bytes::from("b"), text("v"));
         store.flush_all();
         assert_eq!(store.get(0, b"a", 0), None);
         assert_eq!(store.get(5, b"b", 0), None);
+        assert!(store.databases[0].expires.is_empty());
     }
 }

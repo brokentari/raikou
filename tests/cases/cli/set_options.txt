@@ -1,0 +1,96 @@
+# SET options, SETNX, SETEX, PSETEX, GETSET, GETDEL and GETEX. IFDEQ and IFDNE are not supported.
+SET k v NX
+SET k v NX
+SET k w XX
+SET new v XX
+SET k v NX GET
+SET k z XX GET
+SET fresh v NX GET
+SET fresh v XX GET
+SET k v GET GET
+SET k v1 IFEQ nomatch
+SET k v1 IFEQ v
+SET k v2 IFNE v1
+SET k v2 IFNE other
+GET k
+SET missing v IFEQ x
+SET missing v IFNE x
+GET missing
+SET k v EX 0
+SET k v EX -1
+SET k v EX abc
+SET k v EX 1 PX 10
+SET k v EX
+SET k v NX XX
+SET k v KEEPTTL EX 1
+SET k v EX 9223372036854775807
+SET k v PX 9223372036854775807
+SET k v EXAT 0
+SET k v EXAT 9223372036854775807
+SET k v foo
+SET k v IFEQ
+SET k v IFEQ a NX
+SET k v EX 5 EX 6
+SET k v NX NX
+SET k v ex 100
+GET k
+SET k v2 KEEPTTL
+GET k
+SET k v3
+GET k
+SET k v PXAT 1
+GET k
+SET k old
+SET k new GET PXAT 1
+GET k
+SET k v EX 100 GET
+SETNX nx 1
+SETNX nx 2
+GET nx
+SETNX nx
+SETEX ex 100 v
+SETEX ex 0 v
+SETEX ex x v
+SETEX ex -5 v
+SETEX ex 9223372036854775807 v
+SETEX ex 10
+PSETEX px 100000 v
+PSETEX px 0 v
+PSETEX px abc v
+GETSET gs 1
+GETSET gs 2
+GETSET gs
+GETDEL gs
+GETDEL gs
+GETDEL
+GETEX gx
+SET gx v
+GETEX gx
+GETEX gx EX 100
+GETEX gx PERSIST
+GET gx
+GETEX gx EX 0
+GETEX gx EX 1 PX 5
+GETEX gx PERSIST EX 5
+GETEX missing EX 5
+GETEX missing EX 0
+GETEX gx foo
+GETEX gx NX
+GETEX gx EXAT 99999999999
+GETEX gx PXAT 1
+GET gx
+GETEX
+SET e v PX 100
+GET e
+@sleep 500
+GET e
+SET e v EX 100
+SET e w KEEPTTL
+GETEX e PX 100
+@sleep 500
+GET e
+SETEX e2 100 v
+PSETEX e3 100 v
+@sleep 500
+GET e3
+GET e2

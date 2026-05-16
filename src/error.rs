@@ -29,6 +29,8 @@ pub enum CommandError {
     },
     /// An argument is not a 64-bit integer.
     NotInteger,
+    /// The expire argument of the named command is out of range.
+    InvalidExpire(&'static str),
     /// The arguments do not fit the command's syntax.
     Syntax,
     /// The client asked for a RESP version the server lacks.
@@ -91,6 +93,9 @@ impl CommandError {
                 text.put_slice(name);
                 text.put_slice(format!("'. Try {command} HELP.").as_bytes());
                 text.freeze()
+            }
+            Self::InvalidExpire(command) => {
+                Bytes::from(format!("ERR invalid expire time in '{command}' command"))
             }
             Self::Syntax => Bytes::from_static(b"ERR syntax error"),
             Self::NotInteger => Bytes::from_static(b"ERR value is not an integer or out of range"),

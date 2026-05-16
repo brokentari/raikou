@@ -101,13 +101,19 @@ static COMMANDS: &[Command] = &[
     command("echo", 2, connection::echo),
     command("flushall", -1, server::flushall),
     command("get", 2, strings::get),
+    command("getdel", 2, strings::getdel),
+    command("getex", -2, strings::getex),
+    command("getset", 3, strings::getset),
     command("hello", -1, connection::hello),
     command("info", -1, server::info),
     command("ping", -1, connection::ping),
+    command("psetex", 4, strings::psetex),
     command("quit", -1, connection::quit),
     command("reset", 1, connection::reset),
     command("select", 2, connection::select),
     command("set", -3, strings::set),
+    command("setex", 4, strings::setex),
+    command("setnx", 3, strings::setnx),
 ];
 
 fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
