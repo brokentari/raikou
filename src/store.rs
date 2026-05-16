@@ -180,6 +180,27 @@ impl Store {
         self.databases[db].entries.len()
     }
 
+    /// Deletes up to `limit` keys whose deadline has passed; returns how many.
+    pub(crate) fn purge_expired(&mut self, now_ms: u64, limit: usize) -> usize {
+        let mut purged = 0;
+        for database in &mut self.databases {
+            while purged < limit {
+                let Some((deadline, _)) = database.expires.first() else {
+                    break;
+                };
+                if *deadline > now_ms {
+                    break;
+                }
+                let Some((_, key)) = database.expires.pop_first() else {
+                    break;
+                };
+                database.entries.remove(&key);
+                purged += 1;
+            }
+        }
+        purged
+    }
+
     /// Deletes every key in one database.
     pub(crate) fn flush_db(&mut self, db: usize) {
         self.databases[db] = Database::default();
@@ -236,6 +257,22 @@ mod tests {
         assert!(store.databases[0].expires.is_empty());
         store.put(0, Bytes::from("e"), text("v"), Ttl::At(5), 0);
         assert_eq!(store.take(0, b"e", 5), None);
+    }
+
+    #[test]
+    fn purge_removes_only_due_keys_up_to_the_limit() {
+        let mut store = Store::default();
+        store.put(0, Bytes::from("a"), text("v"), Ttl::At(10), 0);
+        store.put(0, Bytes::from("b"), text("v"), Ttl::At(20), 0);
+        store.put(1, Bytes::from("c"), text("v"), Ttl::At(15), 0);
+        store.put(1, Bytes::from("d"), text("v"), Ttl::At(100), 0);
+        store.set(1, Bytes::from("e"), text("v"));
+        assert_eq!(store.purge_expired(9, 10), 0);
+        assert_eq!(store.purge_expired(20, 2), 2);
+        assert_eq!(store.purge_expired(20, 10), 1);
+        assert_eq!((store.len(0), store.len(1)), (0, 2));
+        assert_eq!(store.purge_expired(1_000, 10), 1);
+        assert_eq!(store.len(1), 1);
     }
 
     #[test]

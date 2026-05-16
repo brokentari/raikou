@@ -1,0 +1,9 @@
+# Expired keys leave the keyspace without being read (the background sweep).
+SET gone1 v PX 100
+SET gone2 v PX 100
+SET stays v
+SET later v EX 1000
+DBSIZE
+@sleep 1500
+DBSIZE
+EXISTS gone1 gone2 stays later

@@ -2,7 +2,6 @@
 
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,17 +10,10 @@ use tokio::net::TcpStream;
 use crate::resp::{self, Frame};
 use crate::session::Session;
 use crate::state::State;
-use crate::{command, request};
+use crate::{clock, command, request};
 
 // shortcut: Redis closes a client at 1 GiB of unparsed input, so do we
 const MAX_INPUT_LEN: usize = 1 << 30;
-
-fn now_ms() -> u64 {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-}
 
 pub(crate) async fn run(
     mut stream: TcpStream,
@@ -45,7 +37,7 @@ pub(crate) async fn run(
                     if !argv.is_empty() {
                         let reply = {
                             let mut state = shared.lock().expect("state mutex poisoned");
-                            command::dispatch(&mut state, &mut session, now_ms(), &argv)
+                            command::dispatch(&mut state, &mut session, clock::now_ms(), &argv)
                         };
                         resp::encode(&reply, session.protocol, &mut output);
                         close = session.closing;

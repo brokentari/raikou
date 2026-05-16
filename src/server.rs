@@ -2,25 +2,53 @@
 
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 
-use crate::connection;
 use crate::state::State;
+use crate::{clock, connection};
+
+const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
+const SWEEP_BATCH: usize = 1000;
 
 /// Accepts clients on `listener` and serves each on its own task.
 pub async fn serve(listener: TcpListener) -> io::Result<()> {
     let shared = Arc::new(Mutex::new(State::default()));
+    let sweeper = tokio::spawn(sweep(Arc::clone(&shared)));
+    let result = accept_loop(&listener, &shared).await;
+    sweeper.abort();
+    result
+}
+
+async fn accept_loop(listener: &TcpListener, shared: &Arc<Mutex<State>>) -> io::Result<()> {
     let mut next_id = 1;
     loop {
         let (stream, _) = listener.accept().await?;
         let id = next_id;
-        let shared = Arc::clone(&shared);
         next_id += 1;
+        let shared = Arc::clone(shared);
         tokio::spawn(async move {
             // shortcut: a connection that ends with an I/O error has nobody left to tell
             let _ = connection::run(stream, id, shared).await;
         });
+    }
+}
+
+async fn sweep(shared: Arc<Mutex<State>>) {
+    let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+    loop {
+        ticker.tick().await;
+        loop {
+            let purged = {
+                let mut state = shared.lock().expect("state mutex poisoned");
+                state.store.purge_expired(clock::now_ms(), SWEEP_BATCH)
+            };
+            if purged < SWEEP_BATCH {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
     }
 }
 
@@ -75,6 +103,22 @@ mod tests {
         let mut reply = [0; 8];
         client.read_exact(&mut reply).await.expect("read");
         assert_eq!(&reply, b"$2\r\nhi\r\n");
+    }
+
+    #[tokio::test]
+    async fn sweeps_expired_keys_in_the_background() {
+        let mut client = start().await;
+        client
+            .write_all(b"SET gone v PX 50\r\nSET stays v PX 60000\r\nSET forever v\r\n")
+            .await
+            .expect("write");
+        let mut reply = [0; 15];
+        client.read_exact(&mut reply).await.expect("read");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        client.write_all(b"DBSIZE\r\n").await.expect("write");
+        let mut size = [0; 4];
+        client.read_exact(&mut size).await.expect("read");
+        assert_eq!(&size, b":2\r\n");
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 //! Raikou, a Redis-compatible server.
 
+mod clock;
 mod command;
 mod connection;
 pub mod error;
