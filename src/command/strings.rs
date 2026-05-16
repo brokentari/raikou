@@ -4,6 +4,8 @@ use bytes::Bytes;
 
 use crate::command::Context;
 use crate::error::CommandError;
+use crate::long_double::{LongDouble, Parsed};
+use crate::number;
 use crate::resp::Frame;
 use crate::store::Ttl;
 use crate::value::Value;
@@ -49,7 +51,7 @@ fn deadline(
     now_ms: u64,
     command: &'static str,
 ) -> Result<u64, CommandError> {
-    let amount = crate::number::parse_i64(amount).ok_or(CommandError::NotInteger)?;
+    let amount = number::parse_i64(amount).ok_or(CommandError::NotInteger)?;
     let invalid = CommandError::InvalidExpire(command);
     let seconds = matches!(unit, Unit::Ex | Unit::ExAt);
     if amount <= 0 || (seconds && amount > i64::MAX / 1000) {
@@ -244,6 +246,87 @@ pub(super) fn setex(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, 
 
 pub(super) fn psetex(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
     set_with_expiry(context, argv, Unit::Px, "psetex")
+}
+
+fn increment(context: &mut Context<'_>, key: &Bytes, by: i64) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let current = match state.store.get(db, key, now) {
+        Some(value) => number::parse_i64(as_str(value)?).ok_or(CommandError::NotInteger)?,
+        None => 0,
+    };
+    let updated = current
+        .checked_add(by)
+        .ok_or_else(|| CommandError::other("ERR increment or decrement would overflow"))?;
+    let text = Bytes::from(updated.to_string());
+    state
+        .store
+        .put(db, key.clone(), Value::Str(text), Ttl::Keep, now);
+    Ok(Frame::Integer(updated))
+}
+
+fn amount(arg: &Bytes) -> Result<i64, CommandError> {
+    number::parse_i64(arg).ok_or(CommandError::NotInteger)
+}
+
+pub(super) fn incr(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    increment(context, &argv[1], 1)
+}
+
+pub(super) fn decr(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    increment(context, &argv[1], -1)
+}
+
+pub(super) fn incrby(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    increment(context, &argv[1], amount(&argv[2])?)
+}
+
+pub(super) fn decrby(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let by = amount(&argv[2])?;
+    let negated = by
+        .checked_neg()
+        .ok_or_else(|| CommandError::other("ERR decrement would overflow"))?;
+    increment(context, &argv[1], negated)
+}
+
+pub(super) fn incrbyfloat(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let current = match state.store.get(db, &argv[1], now) {
+        Some(value) => LongDouble::parse(as_str(value)?),
+        None => LongDouble::parse(b"0"),
+    };
+    let (Some(current), Some(by)) = (current, LongDouble::parse(&argv[2])) else {
+        return Err(CommandError::NotFloat);
+    };
+    let (Parsed::Finite(current), Parsed::Finite(by)) = (current, by) else {
+        return Err(infinite_sum());
+    };
+    let total = current.checked_add(by).ok_or_else(infinite_sum)?;
+    let text = Bytes::from(total.to_human_string());
+    state.store.put(
+        db,
+        argv[1].clone(),
+        Value::Str(text.clone()),
+        Ttl::Keep,
+        now,
+    );
+    Ok(Frame::bulk(text))
+}
+
+fn infinite_sum() -> CommandError {
+    CommandError::other("ERR increment would produce NaN or Infinity")
 }
 
 pub(super) fn getset(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -480,6 +563,78 @@ mod tests {
             client.run(&["SETEX", "e", "x", "v"]),
             error("ERR value is not an integer or out of range")
         );
+    }
+
+    #[test]
+    fn counters() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["INCR", "n"]), Frame::Integer(1));
+        assert_eq!(client.run(&["INCRBY", "n", "9"]), Frame::Integer(10));
+        assert_eq!(client.run(&["DECR", "n"]), Frame::Integer(9));
+        assert_eq!(client.run(&["DECRBY", "n", "20"]), Frame::Integer(-11));
+        assert_eq!(client.run(&["GET", "n"]), Frame::bulk("-11"));
+        assert_eq!(client.run(&["DECRBY", "fresh", "5"]), Frame::Integer(-5));
+    }
+
+    #[test]
+    fn counters_keep_the_expiry() {
+        let mut client = Harness::new();
+        let now = client.now_ms;
+        client.run(&["SET", "n", "1", "PX", "100"]);
+        client.run(&["INCR", "n"]);
+        client.now_ms = now + 100;
+        assert_eq!(client.run(&["GET", "n"]), Frame::Null);
+    }
+
+    #[test]
+    fn counter_errors() {
+        let mut client = Harness::new();
+        let not_int = error("ERR value is not an integer or out of range");
+        client.run(&["SET", "s", "text"]);
+        client.run(&["SET", "f", "1.5"]);
+        client.run(&["SET", "max", "9223372036854775807"]);
+        assert_eq!(client.run(&["INCR", "s"]), not_int);
+        assert_eq!(client.run(&["INCR", "f"]), not_int);
+        assert_eq!(client.run(&["INCRBY", "x", "1.5"]), not_int);
+        assert_eq!(
+            client.run(&["INCR", "max"]),
+            error("ERR increment or decrement would overflow")
+        );
+        assert_eq!(
+            client.run(&["DECRBY", "x", "-9223372036854775808"]),
+            error("ERR decrement would overflow")
+        );
+        assert_eq!(
+            client.run(&["GET", "max"]),
+            Frame::bulk("9223372036854775807")
+        );
+    }
+
+    #[test]
+    fn incrbyfloat_sums_like_redis() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["INCRBYFLOAT", "f", "0.1"]), Frame::bulk("0.1"));
+        assert_eq!(client.run(&["INCRBYFLOAT", "f", "0.2"]), Frame::bulk("0.3"));
+        assert_eq!(client.run(&["INCRBYFLOAT", "f", "-0.3"]), Frame::bulk("0"));
+        client.run(&["SET", "g", "5.0e3"]);
+        assert_eq!(
+            client.run(&["INCRBYFLOAT", "g", "2.0e2"]),
+            Frame::bulk("5200")
+        );
+        assert_eq!(client.run(&["GET", "g"]), Frame::bulk("5200"));
+    }
+
+    #[test]
+    fn incrbyfloat_errors() {
+        let mut client = Harness::new();
+        let not_float = error("ERR value is not a valid float");
+        client.run(&["SET", "s", "text"]);
+        assert_eq!(client.run(&["INCRBYFLOAT", "s", "1"]), not_float);
+        assert_eq!(client.run(&["INCRBYFLOAT", "n", "abc"]), not_float);
+        assert_eq!(client.run(&["INCRBYFLOAT", "n", "nan"]), not_float);
+        let infinite = error("ERR increment would produce NaN or Infinity");
+        assert_eq!(client.run(&["INCRBYFLOAT", "n", "inf"]), infinite);
+        assert_eq!(client.run(&["INCRBYFLOAT", "n", "-inf"]), infinite);
     }
 
     #[test]

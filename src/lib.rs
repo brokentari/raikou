@@ -3,6 +3,7 @@
 mod command;
 mod connection;
 pub mod error;
+mod long_double;
 pub mod number;
 pub mod request;
 pub mod resp;

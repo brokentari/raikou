@@ -2,6 +2,7 @@
 
 use bytes::{BufMut, BytesMut};
 
+use crate::number;
 use crate::resp::{Frame, Protocol};
 
 /// Appends the wire form of `frame` for a `protocol` client to `out`.
@@ -17,8 +18,8 @@ pub fn encode(frame: &Frame, protocol: Protocol, out: &mut BytesMut) {
             out.put_slice(if *value { b"#t\r\n" } else { b"#f\r\n" });
         }
         Frame::Boolean(value) => line(out, b':', if *value { b"1" } else { b"0" }),
-        Frame::Double(value) if resp3 => line(out, b',', double_text(*value).as_bytes()),
-        Frame::Double(value) => bulk(out, b'$', double_text(*value).as_bytes()),
+        Frame::Double(value) if resp3 => line(out, b',', number::format_double(*value).as_bytes()),
+        Frame::Double(value) => bulk(out, b'$', number::format_double(*value).as_bytes()),
         Frame::BigNumber(digits) if resp3 => line(out, b'(', digits),
         Frame::BigNumber(digits) => bulk(out, b'$', digits),
         Frame::BulkError(text) if resp3 => bulk(out, b'!', text),
@@ -61,16 +62,6 @@ fn aggregate(out: &mut BytesMut, prefix: u8, items: &[Frame], protocol: Protocol
     line(out, prefix, items.len().to_string().as_bytes());
     for item in items {
         encode(item, protocol, out);
-    }
-}
-
-fn double_text(value: f64) -> String {
-    if value.is_nan() {
-        "nan".to_owned()
-    } else if value.is_infinite() {
-        if value > 0.0 { "inf" } else { "-inf" }.to_owned()
-    } else {
-        value.to_string()
     }
 }
 
