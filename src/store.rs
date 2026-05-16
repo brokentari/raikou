@@ -27,6 +27,14 @@ pub(crate) enum Ttl {
     At(u64),
 }
 
+/// When a key stops existing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Expiry {
+    Missing,
+    Never,
+    At(u64),
+}
+
 #[derive(Debug, Default)]
 struct Database {
     entries: HashMap<Bytes, Entry>,
@@ -106,6 +114,14 @@ impl Store {
                 expires_at: deadline,
             },
         );
+    }
+
+    /// Reports whether `key` exists and when it expires.
+    pub(crate) fn expiry(&mut self, db: usize, key: &[u8], now_ms: u64) -> Expiry {
+        match self.databases[db].live(key, now_ms) {
+            None => Expiry::Missing,
+            Some(entry) => entry.expires_at.map_or(Expiry::Never, Expiry::At),
+        }
     }
 
     /// Sets or, with `None`, removes the deadline of a live key; returns whether it changed.
@@ -251,6 +267,17 @@ mod tests {
         store.put(0, Bytes::from("k"), text("c"), Ttl::Clear, 0);
         assert_eq!(deadline(&mut store, b"k", 0), (true, None));
         assert_eq!(deadline(&mut store, b"missing", 0), (false, None));
+    }
+
+    #[test]
+    fn expiry_reports_all_three_states() {
+        let mut store = Store::default();
+        store.set(0, Bytes::from("a"), text("v"));
+        store.put(0, Bytes::from("b"), text("v"), Ttl::At(9), 0);
+        assert_eq!(store.expiry(0, b"a", 0), Expiry::Never);
+        assert_eq!(store.expiry(0, b"b", 0), Expiry::At(9));
+        assert_eq!(store.expiry(0, b"c", 0), Expiry::Missing);
+        assert_eq!(store.expiry(0, b"b", 9), Expiry::Missing);
     }
 
     #[test]
