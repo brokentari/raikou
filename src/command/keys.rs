@@ -4,10 +4,10 @@ use bytes::Bytes;
 
 use crate::command::Context;
 use crate::error::CommandError;
-use crate::number;
 use crate::resp::Frame;
 use crate::store::{Expiry, Ttl};
 use crate::value::Value;
+use crate::{glob, number};
 
 const NX: u8 = 1;
 const XX: u8 = 2;
@@ -145,6 +145,91 @@ pub(super) fn persist(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame
         .store
         .set_deadline(session.db, &argv[1], None, *now_ms);
     Ok(Frame::Integer(i64::from(changed)))
+}
+
+pub(super) fn keys(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    // shortcut: KEYS walks the whole database under the lock, as Redis does
+    let all = argv[1].as_ref() == b"*";
+    let matching = state
+        .store
+        .keys(session.db, *now_ms)
+        .into_iter()
+        .filter(|key| all || glob::matches(&argv[1], key))
+        .map(Frame::bulk)
+        .collect();
+    Ok(Frame::Array(matching))
+}
+
+pub(super) fn randomkey(context: &mut Context<'_>, _: &[Bytes]) -> Result<Frame, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    Ok(state
+        .store
+        .random_key(session.db, *now_ms)
+        .map_or(Frame::Null, Frame::bulk))
+}
+
+pub(super) fn scan(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let cursor = std::str::from_utf8(&argv[1])
+        .ok()
+        .filter(|text| text.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|text| text.parse::<u64>().ok())
+        .ok_or_else(|| CommandError::other("ERR invalid cursor"))?;
+    let mut count = 10;
+    let mut pattern: Option<&Bytes> = None;
+    let mut type_name: Option<String> = None;
+    let mut index = 2;
+    while index < argv.len() {
+        let option = argv[index].to_ascii_lowercase();
+        let value = argv.get(index + 1);
+        match (option.as_slice(), value) {
+            (b"count", Some(value)) => {
+                count = number::parse_i64(value).ok_or(CommandError::NotInteger)?;
+                if count < 1 {
+                    return Err(CommandError::Syntax);
+                }
+            }
+            (b"match", Some(value)) => pattern = Some(value).filter(|value| value.as_ref() != b"*"),
+            (b"type", Some(value)) => {
+                type_name = Some(String::from_utf8_lossy(value).to_ascii_lowercase());
+            }
+            _ => return Err(CommandError::Syntax),
+        }
+        index += 2;
+    }
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    let (db, now) = (session.db, *now_ms);
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let (next, candidates) = state.store.scan(db, cursor, count, now);
+    let keys = candidates
+        .into_iter()
+        .filter(|key| pattern.is_none_or(|pattern| glob::matches(pattern, key)))
+        .filter(|key| {
+            type_name.as_deref().is_none_or(|wanted| {
+                state
+                    .store
+                    .get(db, key, now)
+                    .is_some_and(|value| value.type_name() == wanted)
+            })
+        })
+        .map(Frame::bulk)
+        .collect();
+    Ok(Frame::Array(vec![
+        Frame::bulk(next.to_string()),
+        Frame::Array(keys),
+    ]))
 }
 
 pub(super) fn exists(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -337,6 +422,86 @@ mod tests {
             client.run(&["PEXPIRE", "k", "9223372036854775807"]),
             error("ERR invalid expire time in 'pexpire' command")
         );
+    }
+
+    #[test]
+    fn keys_filters_with_a_glob() {
+        let mut client = Harness::new();
+        client.run(&["MSET", "user:1", "a", "user:2", "b", "other", "c"]);
+        let Frame::Array(mut found) = client.run(&["KEYS", "user:*"]) else {
+            panic!("array")
+        };
+        found.sort_by_key(|frame| format!("{frame:?}"));
+        assert_eq!(found, vec![Frame::bulk("user:1"), Frame::bulk("user:2")]);
+        let Frame::Array(all) = client.run(&["KEYS", "*"]) else {
+            panic!("array")
+        };
+        assert_eq!(all.len(), 3);
+        assert_eq!(client.run(&["KEYS", "nope*"]), Frame::Array(Vec::new()));
+    }
+
+    #[test]
+    fn scan_walks_the_keyspace() {
+        let mut client = Harness::new();
+        for index in 0..25 {
+            client.run(&["SET", &format!("k{index}"), "v"]);
+        }
+        let mut seen = 0;
+        let mut cursor = "0".to_owned();
+        loop {
+            let Frame::Array(reply) = client.run(&["SCAN", &cursor, "COUNT", "4", "MATCH", "k*"])
+            else {
+                panic!("array")
+            };
+            let (Frame::BulkString(next), Frame::Array(keys)) = (&reply[0], &reply[1]) else {
+                panic!("shape")
+            };
+            seen += keys.len();
+            cursor = String::from_utf8(next.to_vec()).expect("digits");
+            if cursor == "0" {
+                break;
+            }
+        }
+        assert_eq!(seen, 25);
+    }
+
+    #[test]
+    fn scan_errors_and_type_filter() {
+        let mut client = Harness::new();
+        client.run(&["SET", "a", "1"]);
+        assert_eq!(client.run(&["SCAN", "x"]), error("ERR invalid cursor"));
+        assert_eq!(
+            client.run(&["SCAN", "0", "COUNT", "0"]),
+            error("ERR syntax error")
+        );
+        assert_eq!(
+            client.run(&["SCAN", "0", "COUNT"]),
+            error("ERR syntax error")
+        );
+        assert_eq!(
+            client.run(&["SCAN", "0", "FOO", "1"]),
+            error("ERR syntax error")
+        );
+        let nothing = Frame::Array(vec![Frame::bulk("0"), Frame::Array(Vec::new())]);
+        assert_eq!(client.run(&["SCAN", "0", "TYPE", "nope"]), nothing);
+        let reply = client.run(&["SCAN", "0", "TYPE", "list"]);
+        assert_eq!(
+            reply,
+            Frame::Array(vec![Frame::bulk("0"), Frame::Array(Vec::new())])
+        );
+        let reply = client.run(&["SCAN", "0", "TYPE", "STRING"]);
+        assert_eq!(
+            reply,
+            Frame::Array(vec![Frame::bulk("0"), Frame::Array(vec![Frame::bulk("a")])])
+        );
+    }
+
+    #[test]
+    fn randomkey_picks_an_existing_key() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["RANDOMKEY"]), Frame::Null);
+        client.run(&["SET", "only", "1"]);
+        assert_eq!(client.run(&["RANDOMKEY"]), Frame::bulk("only"));
     }
 
     #[test]

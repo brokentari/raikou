@@ -172,11 +172,14 @@ fn drain<R: Read + Send + 'static>(mut source: R) -> thread::JoinHandle<String> 
 }
 
 fn strip_index(line: &str) -> &str {
-    let rest = line.trim_start();
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    match rest.as_bytes().get(digits..digits + 2) {
-        Some([b')' | b'#', b' ']) if digits > 0 => &rest[digits + 2..],
-        _ => line,
+    let mut rest = line.trim_start();
+    loop {
+        rest = rest.trim_start();
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        match rest.as_bytes().get(digits..digits + 2) {
+            Some([b')' | b'#', b' ']) if digits > 0 => rest = &rest[digits + 2..],
+            _ => return rest,
+        }
     }
 }
 

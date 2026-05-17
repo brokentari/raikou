@@ -1,9 +1,11 @@
 //! All databases and their keys.
 
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bytes::Bytes;
 
+use crate::random;
 use crate::session::DATABASES;
 use crate::value::Value;
 
@@ -35,18 +37,35 @@ pub(crate) enum Expiry {
     At(u64),
 }
 
+fn scan_hash(key: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Debug, Default)]
 struct Database {
     entries: HashMap<Bytes, Entry>,
     expires: BTreeSet<(u64, Bytes)>,
+    scan_order: BTreeSet<(u64, Bytes)>,
 }
 
 impl Database {
+    fn insert_entry(&mut self, key: Bytes, entry: Entry) {
+        self.remove_entry(&key);
+        if let Some(deadline) = entry.expires_at {
+            self.expires.insert((deadline, key.clone()));
+        }
+        self.scan_order.insert((scan_hash(&key), key.clone()));
+        self.entries.insert(key, entry);
+    }
+
     fn remove_entry(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
         if let Some(deadline) = entry.expires_at {
-            self.expires.remove(&(deadline, key));
+            self.expires.remove(&(deadline, key.clone()));
         }
+        self.scan_order.remove(&(scan_hash(&key), key));
         Some(entry)
     }
 
@@ -103,11 +122,7 @@ impl Store {
                 .live(&key, now_ms)
                 .and_then(|entry| entry.expires_at),
         };
-        database.remove_entry(&key);
-        if let Some(deadline) = deadline {
-            database.expires.insert((deadline, key.clone()));
-        }
-        database.entries.insert(
+        database.insert_entry(
             key,
             Entry {
                 value,
@@ -180,6 +195,60 @@ impl Store {
         self.databases[db].entries.len()
     }
 
+    /// Lists the live keys of one database in no particular order.
+    pub(crate) fn keys(&self, db: usize, now_ms: u64) -> Vec<Bytes> {
+        let entries = &self.databases[db].entries;
+        let live = entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_expired(now_ms));
+        live.map(|(key, _)| key.clone()).collect()
+    }
+
+    /// Returns a random live key, dropping expired keys it meets.
+    pub(crate) fn random_key(&mut self, db: usize, now_ms: u64) -> Option<Bytes> {
+        loop {
+            let database = &self.databases[db];
+            let start = (random::random_u64(), Bytes::new());
+            let (_, key) = database
+                .scan_order
+                .range(start..)
+                .next()
+                .or_else(|| database.scan_order.first())?;
+            let key = key.clone();
+            if self.get(db, &key, now_ms).is_some() {
+                return Some(key);
+            }
+        }
+    }
+
+    /// Visits about `count` keys from `cursor`; returns the next cursor (0 at the end) and keys.
+    pub(crate) fn scan(
+        &self,
+        db: usize,
+        cursor: u64,
+        count: usize,
+        now_ms: u64,
+    ) -> (u64, Vec<Bytes>) {
+        let database = &self.databases[db];
+        let mut found = Vec::new();
+        let mut previous = None;
+        let from = (cursor, Bytes::new());
+        for (visited, (hash, key)) in database.scan_order.range(from..).enumerate() {
+            if visited >= count && previous != Some(*hash) {
+                return (*hash, found);
+            }
+            previous = Some(*hash);
+            if database
+                .entries
+                .get(key)
+                .is_some_and(|entry| !entry.is_expired(now_ms))
+            {
+                found.push(key.clone());
+            }
+        }
+        (0, found)
+    }
+
     /// Deletes up to `limit` keys whose deadline has passed; returns how many.
     pub(crate) fn purge_expired(&mut self, now_ms: u64, limit: usize) -> usize {
         let mut purged = 0;
@@ -195,6 +264,7 @@ impl Store {
                     break;
                 };
                 database.entries.remove(&key);
+                database.scan_order.remove(&(scan_hash(&key), key));
                 purged += 1;
             }
         }
@@ -273,6 +343,49 @@ mod tests {
         assert_eq!((store.len(0), store.len(1)), (0, 2));
         assert_eq!(store.purge_expired(1_000, 10), 1);
         assert_eq!(store.len(1), 1);
+    }
+
+    #[test]
+    fn scan_visits_every_key_once_in_cursor_order() {
+        let mut store = Store::default();
+        for index in 0..50 {
+            store.set(0, Bytes::from(format!("key{index}")), text("v"));
+        }
+        store.put(0, Bytes::from("dead"), text("v"), Ttl::At(5), 0);
+        let mut seen = Vec::new();
+        let mut cursor = 0;
+        loop {
+            let (next, keys) = store.scan(0, cursor, 7, 10);
+            seen.extend(keys);
+            cursor = next;
+            if cursor == 0 {
+                break;
+            }
+        }
+        seen.sort();
+        let mut expected: Vec<Bytes> = (0..50)
+            .map(|index| Bytes::from(format!("key{index}")))
+            .collect();
+        expected.sort();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn scan_of_an_empty_database_ends_at_once() {
+        let store = Store::default();
+        assert_eq!(store.scan(0, 0, 10, 0), (0, Vec::new()));
+    }
+
+    #[test]
+    fn keys_and_random_key_skip_expired_keys() {
+        let mut store = Store::default();
+        assert_eq!(store.random_key(0, 0), None);
+        store.set(0, Bytes::from("live"), text("v"));
+        store.put(0, Bytes::from("dead"), text("v"), Ttl::At(5), 0);
+        assert_eq!(store.keys(0, 10), vec![Bytes::from("live")]);
+        for _ in 0..20 {
+            assert_eq!(store.random_key(0, 10), Some(Bytes::from("live")));
+        }
     }
 
     #[test]

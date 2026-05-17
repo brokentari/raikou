@@ -1,0 +1,62 @@
+@resp2-only
+# KEYS patterns, SCAN options and RANDOMKEY.
+RANDOMKEY
+MSET hello 1 hallo 2 hillo 3 h*llo 4 hxllo 5 heeeello 6 hllo 7 "" 8 abc 9 "a b" 10 "a]b" 11 ha 12
+@unordered KEYS *
+@unordered KEYS h?llo
+@unordered KEYS h*llo
+@unordered KEYS h[ae]llo
+@unordered KEYS h[^e]llo
+@unordered KEYS h[a-b]llo
+@unordered KEYS h[b-a]llo
+@unordered KEYS h\*llo
+@unordered KEYS h\?llo
+@unordered KEYS "a b"
+@unordered KEYS a?b
+@unordered KEYS a[ ]b
+@unordered KEYS a[\]]b
+@unordered KEYS h[a
+@unordered KEYS []
+@unordered KEYS [
+@unordered KEYS ""
+@unordered KEYS ?
+@unordered KEYS ??
+@unordered KEYS **
+@unordered KEYS *a*
+@unordered KEYS ***llo
+@unordered KEYS nomatch*
+@unordered KEYS h[a-e]llo
+@unordered KEYS h[^a-e]llo
+@unordered KEYS *o
+@unordered KEYS h*o
+KEYS
+KEYS a b
+SCAN 0 MATCH nomatch* COUNT 1000
+SCAN x
+SCAN -1
+SCAN 1.5
+SCAN 18446744073709551616
+SCAN 0 COUNT 0
+SCAN 0 COUNT -1
+SCAN 0 COUNT x
+SCAN 0 COUNT
+SCAN 0 MATCH
+SCAN 0 FOO
+SCAN 0 FOO bar
+SCAN 0 TYPE nope COUNT 1000
+SCAN 0 TYPE list COUNT 1000
+SCAN
+@unordered SCAN 0 COUNT 1000
+@unordered SCAN 0 COUNT 1000 MATCH h*
+@unordered SCAN 0 COUNT 1000 MATCH * TYPE string
+@unordered SCAN 0 COUNT 1000 TYPE STRING MATCH h?llo
+@unordered SCAN 0 TYPE hash COUNT 1000
+SELECT 1
+RANDOMKEY
+KEYS *
+SCAN 0
+SET only v
+RANDOMKEY
+SCAN 0
+SELECT 0
+RANDOMKEY a
