@@ -9,6 +9,7 @@ mod connection;
 #[cfg(test)]
 pub(crate) mod harness;
 mod keys;
+mod lists;
 mod server;
 mod strings;
 
@@ -120,6 +121,12 @@ static COMMANDS: &[Command] = &[
     command("incrbyfloat", 3, strings::incrbyfloat),
     command("info", -1, server::info),
     command("keys", 2, keys::keys),
+    command("lindex", 3, lists::lindex),
+    command("llen", 2, lists::llen),
+    command("lpop", -2, lists::lpop),
+    command("lpush", -3, lists::lpush),
+    command("lpushx", -3, lists::lpushx),
+    command("lrange", 4, lists::lrange),
     command("mget", -2, strings::mget),
     command("mset", -3, strings::mset),
     command("msetnx", -3, strings::msetnx),
@@ -135,6 +142,9 @@ static COMMANDS: &[Command] = &[
     command("rename", 3, keys::rename),
     command("renamenx", 3, keys::renamenx),
     command("reset", 1, connection::reset),
+    command("rpop", -2, lists::rpop),
+    command("rpush", -3, lists::rpush),
+    command("rpushx", -3, lists::rpushx),
     command("scan", -2, keys::scan),
     command("select", 2, connection::select),
     command("set", -3, strings::set),

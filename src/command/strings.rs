@@ -42,6 +42,7 @@ struct Options<'a> {
 fn as_str(value: &Value) -> Result<&Bytes, CommandError> {
     match value {
         Value::Str(data) => Ok(data),
+        Value::List(_) => Err(CommandError::WrongType),
     }
 }
 
@@ -185,12 +186,15 @@ fn set_generic(
         Expire::After(unit, amount) => Some(deadline(amount, unit, now, command)?),
         _ => None,
     };
-    let current = state
-        .store
-        .get(db, key, now)
-        .map(as_str)
-        .transpose()?
-        .cloned();
+    let existing = state.store.get(db, key, now);
+    let found = existing.is_some();
+    let needs_value =
+        options.get || matches!(options.condition, Condition::IfEq(_) | Condition::IfNe(_));
+    let current = if needs_value {
+        existing.map(as_str).transpose()?.cloned()
+    } else {
+        None
+    };
     let reply_to_get = || current.clone().map_or(Frame::Null, Frame::bulk);
     let abort = || {
         if options.get {
@@ -199,12 +203,12 @@ fn set_generic(
             Frame::Null
         }
     };
-    let found = current.is_some();
-    let blocked = match (&options.condition, &current) {
-        (Condition::Nx, Some(_)) | (Condition::Xx | Condition::IfEq(_), None) => true,
-        (Condition::IfEq(expected), Some(data)) => data != *expected,
-        (Condition::IfNe(expected), Some(data)) => data == *expected,
-        _ => false,
+    let blocked = match &options.condition {
+        Condition::Nx => found,
+        Condition::Xx => !found,
+        Condition::IfEq(expected) => current.as_ref().is_none_or(|data| data != *expected),
+        Condition::IfNe(expected) => current.as_ref().is_some_and(|data| data == *expected),
+        Condition::None => false,
     };
     if blocked {
         return Ok(abort());
@@ -357,7 +361,9 @@ pub(super) fn append(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame,
             .set(db, argv[1].clone(), Value::Str(argv[2].clone()));
         return Ok(Frame::Integer(len_frame(argv[2].len())));
     };
-    let Value::Str(data) = value;
+    let Value::Str(data) = value else {
+        return Err(CommandError::WrongType);
+    };
     if data.len() + argv[2].len() > MAX_STRING_LEN {
         return Err(too_long());
     }
@@ -441,7 +447,9 @@ pub(super) fn setrange(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Fram
         buffer[offset..offset + piece.len()].copy_from_slice(piece);
     };
     if let Some(value) = state.store.get_mut(db, &argv[1], now) {
-        let Value::Str(data) = value;
+        let Value::Str(data) = value else {
+            return Err(CommandError::WrongType);
+        };
         edit(data, change);
         return Ok(Frame::Integer(len_frame(data.len())));
     }
@@ -464,7 +472,7 @@ pub(super) fn mget(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, C
         .iter()
         .map(|key| match state.store.get(session.db, key, *now_ms) {
             Some(Value::Str(data)) => Frame::bulk(data.clone()),
-            None => Frame::Null,
+            _ => Frame::Null,
         })
         .collect();
     Ok(Frame::Array(values))

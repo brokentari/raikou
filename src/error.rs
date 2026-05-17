@@ -29,6 +29,8 @@ pub enum CommandError {
     },
     /// An argument is not a 64-bit integer.
     NotInteger,
+    /// The key holds a value of another type.
+    WrongType,
     /// An argument is not a float.
     NotFloat,
     /// The expire argument of the named command is out of range.
@@ -96,6 +98,9 @@ impl CommandError {
                 text.put_slice(format!("'. Try {command} HELP.").as_bytes());
                 text.freeze()
             }
+            Self::WrongType => Bytes::from_static(
+                b"WRONGTYPE Operation against a key holding the wrong kind of value",
+            ),
             Self::NotFloat => Bytes::from_static(b"ERR value is not a valid float"),
             Self::InvalidExpire(command) => {
                 Bytes::from(format!("ERR invalid expire time in '{command}' command"))
