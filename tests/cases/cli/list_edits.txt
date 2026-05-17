@@ -1,0 +1,76 @@
+@resp2-only
+# LSET, LINSERT, LREM, LTRIM, LMOVE and RPOPLPUSH.
+RPUSH l a b a c a
+LSET l 1 B
+LSET l -1 Z
+LSET l 9 x
+LSET l -9 x
+LSET l x v
+LSET none 0 v
+LSET none x v
+LSET l 0
+LSET
+LINSERT l BEFORE c x
+LINSERT l after Z y
+LINSERT l AFTER q y
+LINSERT none AFTER q y
+LINSERT l MIDDLE q y
+LINSERT none MIDDLE q y
+LINSERT l BEFORE a
+LRANGE l 0 -1
+LREM l -1 a
+LREM l 0 a
+LREM l 5 nope
+LREM none 1 a
+LREM l x a
+LREM l -9223372036854775808 a
+LREM l 1
+LRANGE l 0 -1
+RPUSH d x x x x
+LREM d 2 x
+LREM d -1 x
+LRANGE d 0 -1
+LREM d 0 x
+EXISTS d
+RPUSH t a b c d e
+LTRIM t 1 -2
+LRANGE t 0 -1
+LTRIM t 0 0
+LRANGE t 0 -1
+LTRIM t 5 9
+EXISTS t
+LTRIM none 0 1
+LTRIM t x 1
+LTRIM t 0 y
+RPUSH t a b c
+LTRIM t -100 100
+LRANGE t 0 -1
+LTRIM t 2 1
+EXISTS t
+RPUSH src a b c
+LMOVE src dst LEFT RIGHT
+RPOPLPUSH src dst
+LRANGE dst 0 -1
+LMOVE src src right left
+LRANGE src 0 -1
+LMOVE none dst LEFT LEFT
+LMOVE src dst UP LEFT
+LMOVE src dst LEFT UP
+LMOVE none dst UP LEFT
+LMOVE src dst left
+RPOPLPUSH none dst
+RPOPLPUSH src
+SET s v
+LMOVE src s LEFT LEFT
+LMOVE s src LEFT LEFT
+RPOPLPUSH s src
+RPOPLPUSH src s
+LRANGE src 0 -1
+RPOPLPUSH src src
+RPOPLPUSH src other
+EXISTS src
+LRANGE other 0 -1
+LSET s 0 v
+LINSERT s BEFORE a b
+LREM s 1 v
+LTRIM s 0 1

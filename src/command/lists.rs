@@ -201,6 +201,145 @@ pub(super) fn lindex(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame,
     Ok(found.cloned().map_or(Frame::Null, Frame::bulk))
 }
 
+pub(super) fn lset(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let Some(list) = list_mut(context, &argv[1])? else {
+        return Err(CommandError::other("ERR no such key"));
+    };
+    let index = integer(&argv[2])?;
+    let len = i64::try_from(list.len()).unwrap_or(i64::MAX);
+    let index = if index < 0 { index + len } else { index };
+    let slot = usize::try_from(index)
+        .ok()
+        .and_then(|index| list.get_mut(index));
+    let slot = slot.ok_or_else(|| CommandError::other("ERR index out of range"))?;
+    slot.clone_from(&argv[3]);
+    Ok(Frame::ok())
+}
+
+pub(super) fn linsert(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let after = match argv[2].to_ascii_lowercase().as_slice() {
+        b"after" => true,
+        b"before" => false,
+        _ => return Err(CommandError::Syntax),
+    };
+    let Some(list) = list_mut(context, &argv[1])? else {
+        return Ok(Frame::Integer(0));
+    };
+    let Some(position) = list.iter().position(|element| *element == argv[3]) else {
+        return Ok(Frame::Integer(-1));
+    };
+    list.insert(position + usize::from(after), argv[4].clone());
+    Ok(count_frame(list.len()))
+}
+
+pub(super) fn lrem(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let count = integer(&argv[2])?;
+    if count == i64::MIN {
+        return Err(CommandError::other(
+            "ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807",
+        ));
+    }
+    let Some(list) = list_mut(context, &argv[1])? else {
+        return Ok(Frame::Integer(0));
+    };
+    let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
+    let limit = if limit == 0 { usize::MAX } else { limit };
+    let mut removed = 0;
+    let mut index = if count < 0 { list.len() } else { 0 };
+    while removed < limit && index <= list.len() {
+        if count < 0 {
+            if index == 0 {
+                break;
+            }
+            index -= 1;
+            if list[index] == argv[3] {
+                list.remove(index);
+                removed += 1;
+            }
+        } else if index < list.len() {
+            if list[index] == argv[3] {
+                list.remove(index);
+                removed += 1;
+            } else {
+                index += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    drop_if_empty(context, &argv[1]);
+    Ok(count_frame(removed))
+}
+
+pub(super) fn ltrim(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let (start, end) = (integer(&argv[2])?, integer(&argv[3])?);
+    let Some(list) = list_mut(context, &argv[1])? else {
+        return Ok(Frame::ok());
+    };
+    match resolve_range(start, end, list.len()) {
+        Some((low, high)) => {
+            list.truncate(high + 1);
+            list.drain(..low);
+        }
+        None => list.clear(),
+    }
+    drop_if_empty(context, &argv[1]);
+    Ok(Frame::ok())
+}
+
+fn direction(arg: &Bytes) -> Result<End, CommandError> {
+    match arg.to_ascii_lowercase().as_slice() {
+        b"left" => Ok(End::Head),
+        b"right" => Ok(End::Tail),
+        _ => Err(CommandError::Syntax),
+    }
+}
+
+fn move_element(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+    from: End,
+    to: End,
+) -> Result<Frame, CommandError> {
+    let Some(source) = list_mut(context, &argv[1])? else {
+        return Ok(Frame::Null);
+    };
+    if source.is_empty() {
+        return Ok(Frame::Null);
+    }
+    if argv[1] != argv[2] && list_ref(context, &argv[2])?.is_none() {
+        let Context { state, session, .. } = context;
+        state
+            .store
+            .set(session.db, argv[2].clone(), Value::List(VecDeque::new()));
+    }
+    let element = match list_mut(context, &argv[1])? {
+        Some(source) if from == End::Head => source.pop_front(),
+        Some(source) => source.pop_back(),
+        None => None,
+    };
+    let Some(element) = element else {
+        return Ok(Frame::Null);
+    };
+    if let Some(target) = list_mut(context, &argv[2])? {
+        match to {
+            End::Head => target.push_front(element.clone()),
+            End::Tail => target.push_back(element.clone()),
+        }
+    }
+    drop_if_empty(context, &argv[1]);
+    Ok(Frame::bulk(element))
+}
+
+pub(super) fn lmove(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let (from, to) = (direction(&argv[3])?, direction(&argv[4])?);
+    move_element(context, argv, from, to)
+}
+
+pub(super) fn rpoplpush(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    move_element(context, argv, End::Tail, End::Head)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::command::harness::{Harness, error};
@@ -298,6 +437,103 @@ mod tests {
         assert_eq!(client.run(&["LINDEX", "l", "3"]), Frame::Null);
         assert_eq!(client.run(&["LINDEX", "l", "-4"]), Frame::Null);
         assert_eq!(client.run(&["LINDEX", "none", "0"]), Frame::Null);
+    }
+
+    #[test]
+    fn lset_linsert_lrem() {
+        let mut client = Harness::new();
+        client.run(&["RPUSH", "l", "a", "b", "a", "c", "a"]);
+        assert_eq!(client.run(&["LSET", "l", "1", "B"]), Frame::ok());
+        assert_eq!(client.run(&["LSET", "l", "-1", "Z"]), Frame::ok());
+        assert_eq!(
+            client.run(&["LSET", "l", "9", "x"]),
+            error("ERR index out of range")
+        );
+        assert_eq!(
+            client.run(&["LSET", "none", "0", "x"]),
+            error("ERR no such key")
+        );
+        assert_eq!(
+            client.run(&["LINSERT", "l", "BEFORE", "c", "x"]),
+            Frame::Integer(6)
+        );
+        assert_eq!(
+            client.run(&["LINSERT", "l", "after", "Z", "y"]),
+            Frame::Integer(7)
+        );
+        assert_eq!(
+            client.run(&["LINSERT", "l", "AFTER", "q", "y"]),
+            Frame::Integer(-1)
+        );
+        assert_eq!(
+            client.run(&["LINSERT", "none", "AFTER", "q", "y"]),
+            Frame::Integer(0)
+        );
+        assert_eq!(
+            client.run(&["LINSERT", "l", "MIDDLE", "q", "y"]),
+            error("ERR syntax error")
+        );
+        assert_eq!(
+            client.run(&["LRANGE", "l", "0", "-1"]),
+            strings(&["a", "B", "a", "x", "c", "Z", "y"])
+        );
+        assert_eq!(client.run(&["LREM", "l", "-1", "a"]), Frame::Integer(1));
+        assert_eq!(client.run(&["LREM", "l", "0", "a"]), Frame::Integer(1));
+        assert_eq!(client.run(&["LREM", "l", "5", "nope"]), Frame::Integer(0));
+        assert_eq!(
+            client.run(&["LRANGE", "l", "0", "-1"]),
+            strings(&["B", "x", "c", "Z", "y"])
+        );
+    }
+
+    #[test]
+    fn ltrim_keeps_a_window() {
+        let mut client = Harness::new();
+        client.run(&["RPUSH", "l", "a", "b", "c", "d", "e"]);
+        assert_eq!(client.run(&["LTRIM", "l", "1", "-2"]), Frame::ok());
+        assert_eq!(
+            client.run(&["LRANGE", "l", "0", "-1"]),
+            strings(&["b", "c", "d"])
+        );
+        assert_eq!(client.run(&["LTRIM", "l", "5", "9"]), Frame::ok());
+        assert_eq!(client.run(&["EXISTS", "l"]), Frame::Integer(0));
+        assert_eq!(client.run(&["LTRIM", "none", "0", "1"]), Frame::ok());
+    }
+
+    #[test]
+    fn lmove_and_rpoplpush() {
+        let mut client = Harness::new();
+        client.run(&["RPUSH", "src", "a", "b", "c"]);
+        assert_eq!(
+            client.run(&["LMOVE", "src", "dst", "LEFT", "RIGHT"]),
+            Frame::bulk("a")
+        );
+        assert_eq!(client.run(&["RPOPLPUSH", "src", "dst"]), Frame::bulk("c"));
+        assert_eq!(
+            client.run(&["LRANGE", "dst", "0", "-1"]),
+            strings(&["c", "a"])
+        );
+        assert_eq!(
+            client.run(&["LMOVE", "src", "src", "right", "left"]),
+            Frame::bulk("b")
+        );
+        assert_eq!(client.run(&["LRANGE", "src", "0", "-1"]), strings(&["b"]));
+        assert_eq!(
+            client.run(&["LMOVE", "none", "dst", "LEFT", "LEFT"]),
+            Frame::Null
+        );
+        assert_eq!(
+            client.run(&["LMOVE", "src", "dst", "UP", "LEFT"]),
+            error("ERR syntax error")
+        );
+        client.run(&["SET", "s", "v"]);
+        assert_eq!(
+            client.run(&["LMOVE", "src", "s", "LEFT", "LEFT"]),
+            error("WRONGTYPE Operation against a key holding the wrong kind of value")
+        );
+        assert_eq!(client.run(&["LRANGE", "src", "0", "-1"]), strings(&["b"]));
+        client.run(&["LMOVE", "src", "other", "LEFT", "LEFT"]);
+        assert_eq!(client.run(&["EXISTS", "src"]), Frame::Integer(0));
     }
 
     #[test]
