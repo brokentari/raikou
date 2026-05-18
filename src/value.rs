@@ -1,6 +1,6 @@
 //! The values a key can hold.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use bytes::Bytes;
 
@@ -9,6 +9,7 @@ use bytes::Bytes;
 pub(crate) enum Value {
     Str(Bytes),
     List(VecDeque<Bytes>),
+    Hash(HashMap<Bytes, Bytes>),
 }
 
 impl Value {
@@ -17,6 +18,7 @@ impl Value {
         match self {
             Self::Str(_) => "string",
             Self::List(_) => "list",
+            Self::Hash(_) => "hash",
         }
     }
 }

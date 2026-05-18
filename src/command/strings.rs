@@ -42,7 +42,7 @@ struct Options<'a> {
 fn as_str(value: &Value) -> Result<&Bytes, CommandError> {
     match value {
         Value::Str(data) => Ok(data),
-        Value::List(_) => Err(CommandError::WrongType),
+        Value::List(_) | Value::Hash(_) => Err(CommandError::WrongType),
     }
 }
 

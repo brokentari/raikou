@@ -1,0 +1,71 @@
+@resp2-only
+# HSET, HGET, HMSET, HMGET, HGETALL, HDEL, HEXISTS, HLEN, HKEYS and HVALS.
+HSET h a 1 b 2
+HSET h a 9 c 3
+HSET h
+HSET h a
+HSET h a 1 b
+HSET
+HGET h a
+HGET h zz
+HGET none a
+HGET h
+HEXISTS h b
+HEXISTS h zz
+HEXISTS none a
+HLEN h
+HLEN none
+TYPE h
+HMSET m a 1 b 2
+HMSET m a
+HMSET m a 1 b
+HMGET m a x b
+HMGET none a b
+HMGET m
+@unordered HGETALL h
+@unordered HGETALL m
+HGETALL none
+HGETALL
+@unordered HKEYS h
+@unordered HVALS h
+HKEYS none
+HVALS none
+HDEL h a zz a
+HDEL h b c
+EXISTS h
+HDEL h b
+HDEL none a
+HDEL h
+HSET e "" ""
+HGET e ""
+HSET e x ""
+HGET e x
+@unordered HGETALL e
+HSET bin "\x00\xff" "\x01"
+HGET bin "\x00\xff"
+SET s v
+HSET s a 1
+HGET s a
+HGETALL s
+HDEL s a
+HLEN s
+HEXISTS s a
+HKEYS s
+HVALS s
+HMGET s a
+HMSET s a 1
+GET h
+GET m
+LPUSH m x
+LLEN m
+APPEND m x
+STRLEN m
+SET m str
+TYPE m
+HSET q a 1
+RENAME q q2
+HGET q2 a
+EXPIRE q2 100
+@ignore TTL q2
+HDEL q2 a
+EXISTS q2

@@ -8,6 +8,7 @@
 mod connection;
 #[cfg(test)]
 pub(crate) mod harness;
+mod hashes;
 mod keys;
 mod lists;
 mod server;
@@ -115,7 +116,17 @@ static COMMANDS: &[Command] = &[
     command("getex", -2, strings::getex),
     command("getrange", 4, strings::getrange),
     command("getset", 3, strings::getset),
+    command("hdel", -3, hashes::hdel),
     command("hello", -1, connection::hello),
+    command("hexists", 3, hashes::hexists),
+    command("hget", 3, hashes::hget),
+    command("hgetall", 2, hashes::hgetall),
+    command("hkeys", 2, hashes::hkeys),
+    command("hlen", 2, hashes::hlen),
+    command("hmget", -3, hashes::hmget),
+    command("hmset", -4, hashes::hmset),
+    command("hset", -4, hashes::hset),
+    command("hvals", 2, hashes::hvals),
     command("incr", 2, strings::incr),
     command("incrby", 3, strings::incrby),
     command("incrbyfloat", 3, strings::incrbyfloat),
