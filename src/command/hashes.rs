@@ -6,6 +6,8 @@ use bytes::Bytes;
 
 use crate::command::Context;
 use crate::error::CommandError;
+use crate::long_double::{LongDouble, Parsed};
+use crate::number;
 use crate::resp::Frame;
 use crate::value::Value;
 
@@ -162,6 +164,62 @@ pub(super) fn hlen(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, C
     ))
 }
 
+pub(super) fn hsetnx(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let hash = hash_or_create(context, &argv[1])?;
+    if hash.contains_key(&argv[2]) {
+        return Ok(Frame::Integer(0));
+    }
+    hash.insert(argv[2].clone(), argv[3].clone());
+    Ok(Frame::Integer(1))
+}
+
+pub(super) fn hstrlen(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let found = hash_ref(context, &argv[1])?.and_then(|hash| hash.get(&argv[2]));
+    Ok(count_frame(found.map_or(0, Bytes::len)))
+}
+
+pub(super) fn hincrby(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    let by = number::parse_i64(&argv[3]).ok_or(CommandError::NotInteger)?;
+    let hash = hash_or_create(context, &argv[1])?;
+    let current = match hash.get(&argv[2]) {
+        Some(text) => number::parse_i64(text)
+            .ok_or_else(|| CommandError::other("ERR hash value is not an integer"))?,
+        None => 0,
+    };
+    let updated = current
+        .checked_add(by)
+        .ok_or_else(|| CommandError::other("ERR increment or decrement would overflow"))?;
+    hash.insert(argv[2].clone(), Bytes::from(updated.to_string()));
+    Ok(Frame::Integer(updated))
+}
+
+pub(super) fn hincrbyfloat(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    let by = match LongDouble::parse(&argv[3]) {
+        None => return Err(CommandError::NotFloat),
+        Some(Parsed::Infinite) => return Err(CommandError::other("ERR value is NaN or Infinity")),
+        Some(Parsed::Finite(by)) => by,
+    };
+    let hash = hash_or_create(context, &argv[1])?;
+    let current = match hash.get(&argv[2]) {
+        None => LongDouble::parse(b"0"),
+        Some(text) => LongDouble::parse(text),
+    };
+    let infinite = || CommandError::other("ERR increment would produce NaN or Infinity");
+    let Some(current) = current else {
+        return Err(CommandError::other("ERR hash value is not a float"));
+    };
+    let Parsed::Finite(current) = current else {
+        return Err(infinite());
+    };
+    let total = current.checked_add(by).ok_or_else(infinite)?;
+    let text = Bytes::from(total.to_human_string());
+    hash.insert(argv[2].clone(), text.clone());
+    Ok(Frame::bulk(text))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::command::harness::{Harness, error};
@@ -252,6 +310,66 @@ mod tests {
         assert_eq!(client.run(&["HDEL", "h", "b"]), Frame::Integer(1));
         assert_eq!(client.run(&["EXISTS", "h"]), Frame::Integer(0));
         assert_eq!(client.run(&["HDEL", "h", "b"]), Frame::Integer(0));
+    }
+
+    #[test]
+    fn hsetnx_and_hstrlen() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["HSETNX", "h", "a", "xyz"]), Frame::Integer(1));
+        assert_eq!(
+            client.run(&["HSETNX", "h", "a", "other"]),
+            Frame::Integer(0)
+        );
+        assert_eq!(client.run(&["HGET", "h", "a"]), Frame::bulk("xyz"));
+        assert_eq!(client.run(&["HSTRLEN", "h", "a"]), Frame::Integer(3));
+        assert_eq!(client.run(&["HSTRLEN", "h", "zz"]), Frame::Integer(0));
+        assert_eq!(client.run(&["HSTRLEN", "none", "a"]), Frame::Integer(0));
+    }
+
+    #[test]
+    fn hincrby_counts() {
+        let mut client = Harness::new();
+        assert_eq!(client.run(&["HINCRBY", "h", "n", "5"]), Frame::Integer(5));
+        assert_eq!(client.run(&["HINCRBY", "h", "n", "-8"]), Frame::Integer(-3));
+        client.run(&["HSET", "h", "s", "text", "max", "9223372036854775807"]);
+        assert_eq!(
+            client.run(&["HINCRBY", "h", "s", "1"]),
+            error("ERR hash value is not an integer")
+        );
+        assert_eq!(
+            client.run(&["HINCRBY", "h", "max", "1"]),
+            error("ERR increment or decrement would overflow")
+        );
+        assert_eq!(
+            client.run(&["HINCRBY", "h", "n", "x"]),
+            error("ERR value is not an integer or out of range")
+        );
+    }
+
+    #[test]
+    fn hincrbyfloat_sums() {
+        let mut client = Harness::new();
+        assert_eq!(
+            client.run(&["HINCRBYFLOAT", "h", "f", "0.1"]),
+            Frame::bulk("0.1")
+        );
+        assert_eq!(
+            client.run(&["HINCRBYFLOAT", "h", "f", "0.2"]),
+            Frame::bulk("0.3")
+        );
+        client.run(&["HSET", "h", "s", "text"]);
+        assert_eq!(
+            client.run(&["HINCRBYFLOAT", "h", "s", "1"]),
+            error("ERR hash value is not a float")
+        );
+        assert_eq!(
+            client.run(&["HINCRBYFLOAT", "h", "f", "abc"]),
+            error("ERR value is not a valid float")
+        );
+        assert_eq!(
+            client.run(&["HINCRBYFLOAT", "h", "f", "inf"]),
+            error("ERR value is NaN or Infinity")
+        );
     }
 
     #[test]
