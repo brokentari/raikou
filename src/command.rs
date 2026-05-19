@@ -12,6 +12,7 @@ mod hashes;
 mod keys;
 mod lists;
 mod server;
+mod sets;
 mod strings;
 
 use bytes::Bytes;
@@ -166,12 +167,20 @@ static COMMANDS: &[Command] = &[
     command("rpoplpush", 3, lists::rpoplpush),
     command("rpush", -3, lists::rpush),
     command("rpushx", -3, lists::rpushx),
+    command("sadd", -3, sets::sadd),
     command("scan", -2, keys::scan),
+    command("scard", 2, sets::scard),
     command("select", 2, connection::select),
     command("set", -3, strings::set),
     command("setex", 4, strings::setex),
     command("setnx", 3, strings::setnx),
     command("setrange", 4, strings::setrange),
+    command("sismember", 3, sets::sismember),
+    command("smembers", 2, sets::smembers),
+    command("smismember", -3, sets::smismember),
+    command("spop", -2, sets::spop),
+    command("srandmember", -2, sets::srandmember),
+    command("srem", -3, sets::srem),
     command("strlen", 2, strings::strlen),
     command("touch", -2, keys::touch),
     command("ttl", 2, keys::ttl),
