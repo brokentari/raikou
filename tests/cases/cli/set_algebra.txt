@@ -1,0 +1,77 @@
+@resp2-only
+# SMOVE, SUNION, SINTER, SDIFF and their STORE forms.
+SADD a 1 2 3
+SADD b 2 3 4
+SADD c 3 4 5
+@unordered SUNION a b c
+@unordered SUNION a none
+@unordered SUNION none
+@unordered SUNION a
+SUNION
+@unordered SINTER a b c
+@unordered SINTER a b
+@unordered SINTER a none
+@unordered SINTER none a
+@unordered SINTER a
+@unordered SINTER a a
+SINTER
+@unordered SDIFF a b c
+@unordered SDIFF a none
+@unordered SDIFF none a
+@unordered SDIFF a
+@unordered SDIFF a a
+SDIFF
+SUNIONSTORE u a b
+@unordered SMEMBERS u
+SUNIONSTORE u none
+EXISTS u
+SINTERSTORE i a b c
+@unordered SMEMBERS i
+SINTERSTORE i a none
+EXISTS i
+SDIFFSTORE d a b
+@unordered SMEMBERS d
+SDIFFSTORE d a a
+EXISTS d
+SUNIONSTORE
+SUNIONSTORE u
+SINTERSTORE x
+SDIFFSTORE x
+SET dst old
+SUNIONSTORE dst a
+TYPE dst
+@unordered SMEMBERS dst
+SADD tgt 9
+SUNIONSTORE tgt a
+@unordered SMEMBERS tgt
+SUNIONSTORE a a b
+@unordered SMEMBERS a
+SMOVE b c 4
+SMOVE b c 4
+@unordered SMEMBERS b
+@unordered SMEMBERS c
+SMOVE none c 1
+SMOVE c c 3
+SMOVE c c zz
+SMOVE c newdst 5
+@unordered SMEMBERS newdst
+SMOVE b b2 2
+SMOVE b b2 3
+EXISTS b
+SMOVE
+SMOVE a b
+SMOVE a b c d
+SET str v
+SUNION a str
+SUNION str none
+SINTER none str
+SINTER str none
+SDIFF a str
+SDIFF str a
+SUNIONSTORE x a str
+SINTERSTORE x none str
+SDIFFSTORE x a str
+SMOVE str a 1
+SMOVE a str 1
+SMOVE none str 1
+SMOVE a str zz

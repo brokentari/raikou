@@ -188,6 +188,137 @@ pub(super) fn srandmember(
     Ok(Frame::Array(members.into_iter().map(Frame::bulk).collect()))
 }
 
+pub(super) fn smove(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    if set_ref(context, &argv[1])?.is_none() {
+        return Ok(Frame::Integer(0));
+    }
+    set_ref(context, &argv[2])?;
+    if argv[1] == argv[2] {
+        let found = set_ref(context, &argv[1])?.is_some_and(|set| set.contains(&argv[3]));
+        return Ok(Frame::Integer(i64::from(found)));
+    }
+    let removed = set_mut(context, &argv[1])?.is_some_and(|set| set.remove(&argv[3]));
+    if !removed {
+        return Ok(Frame::Integer(0));
+    }
+    drop_if_empty(context, &argv[1]);
+    if set_ref(context, &argv[2])?.is_none() {
+        let Context { state, session, .. } = context;
+        state
+            .store
+            .set(session.db, argv[2].clone(), Value::Set(Set::new()));
+    }
+    if let Some(target) = set_mut(context, &argv[2])? {
+        target.insert(argv[3].clone());
+    }
+    Ok(Frame::Integer(1))
+}
+
+#[derive(Clone, Copy)]
+enum Operation {
+    Union,
+    Inter,
+    Diff,
+}
+
+/// Copies the sets under `keys`; a missing key gives `None` and a wrong type is an error.
+fn load_sets(context: &mut Context<'_>, keys: &[Bytes]) -> Result<Vec<Option<Set>>, CommandError> {
+    // shortcut: set algebra copies its operands while holding the lock
+    keys.iter()
+        .map(|key| set_ref(context, key).map(Option::<&Set>::cloned))
+        .collect()
+}
+
+fn combine(sets: &[Option<Set>], operation: Operation) -> Set {
+    let empty = Set::new();
+    let present = |set: &Option<Set>| set.as_ref().unwrap_or(&empty).clone();
+    match operation {
+        Operation::Union => sets.iter().flat_map(&present).collect(),
+        Operation::Inter => {
+            if sets.iter().any(Option::is_none) {
+                return Set::new();
+            }
+            let mut ordered: Vec<&Set> = sets.iter().flatten().collect();
+            ordered.sort_by_key(|set| set.len());
+            let Some((smallest, others)) = ordered.split_first() else {
+                return Set::new();
+            };
+            smallest
+                .iter()
+                .filter(|member| others.iter().all(|set| set.contains(*member)))
+                .cloned()
+                .collect()
+        }
+        Operation::Diff => {
+            let Some((first, rest)) = sets.split_first() else {
+                return Set::new();
+            };
+            let mut result = present(first);
+            for set in rest.iter().flatten() {
+                result.retain(|member| !set.contains(member));
+            }
+            result
+        }
+    }
+}
+
+fn algebra(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+    operation: Operation,
+    store: bool,
+) -> Result<Frame, CommandError> {
+    let keys = if store { &argv[2..] } else { &argv[1..] };
+    let result = combine(&load_sets(context, keys)?, operation);
+    if !store {
+        return Ok(Frame::Set(result.into_iter().map(Frame::bulk).collect()));
+    }
+    let size = result.len();
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    if result.is_empty() {
+        state.store.remove(session.db, &argv[1], *now_ms);
+    } else {
+        state
+            .store
+            .set(session.db, argv[1].clone(), Value::Set(result));
+    }
+    Ok(count_frame(size))
+}
+
+pub(super) fn sunion(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Union, false)
+}
+
+pub(super) fn sinter(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Inter, false)
+}
+
+pub(super) fn sdiff(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Diff, false)
+}
+
+pub(super) fn sunionstore(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Union, true)
+}
+
+pub(super) fn sinterstore(
+    context: &mut Context<'_>,
+    argv: &[Bytes],
+) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Inter, true)
+}
+
+pub(super) fn sdiffstore(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
+    algebra(context, argv, Operation::Diff, true)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::command::harness::{Harness, error};
@@ -297,6 +428,86 @@ mod tests {
             client.run(&["SRANDMEMBER", "s", "x"]),
             error("ERR value is not an integer or out of range")
         );
+    }
+
+    #[test]
+    fn smove_transfers_a_member() {
+        let mut client = Harness::new();
+        client.run(&["SADD", "a", "x", "y"]);
+        assert_eq!(client.run(&["SMOVE", "a", "b", "x"]), Frame::Integer(1));
+        assert_eq!(client.run(&["SMOVE", "a", "b", "x"]), Frame::Integer(0));
+        assert_eq!(client.run(&["SMOVE", "none", "b", "x"]), Frame::Integer(0));
+        assert_eq!(client.run(&["SMOVE", "a", "a", "y"]), Frame::Integer(1));
+        assert_eq!(client.run(&["SMOVE", "a", "b", "y"]), Frame::Integer(1));
+        assert_eq!(client.run(&["EXISTS", "a"]), Frame::Integer(0));
+        assert_eq!(sorted(client.run(&["SMEMBERS", "b"])), ["x", "y"]);
+        client.run(&["SET", "str", "v"]);
+        client.run(&["SADD", "c", "m"]);
+        let wrong = error("WRONGTYPE Operation against a key holding the wrong kind of value");
+        assert_eq!(client.run(&["SMOVE", "c", "str", "m"]), wrong);
+        assert_eq!(
+            client.run(&["SMOVE", "none", "str", "m"]),
+            Frame::Integer(0)
+        );
+    }
+
+    #[test]
+    fn set_algebra() {
+        let mut client = Harness::new();
+        client.run(&["SADD", "a", "1", "2", "3"]);
+        client.run(&["SADD", "b", "2", "3", "4"]);
+        assert_eq!(
+            sorted(client.run(&["SUNION", "a", "b", "none"])),
+            ["1", "2", "3", "4"]
+        );
+        assert_eq!(sorted(client.run(&["SINTER", "a", "b"])), ["2", "3"]);
+        assert_eq!(
+            sorted(client.run(&["SINTER", "a", "none"])),
+            Vec::<String>::new()
+        );
+        assert_eq!(sorted(client.run(&["SDIFF", "a", "b"])), ["1"]);
+        assert_eq!(
+            sorted(client.run(&["SDIFF", "none", "a"])),
+            Vec::<String>::new()
+        );
+        assert_eq!(sorted(client.run(&["SINTER", "a"])), ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn store_variants_replace_the_target() {
+        let mut client = Harness::new();
+        client.run(&["SADD", "a", "1", "2"]);
+        client.run(&["SADD", "b", "2", "3"]);
+        client.run(&["SET", "dst", "old"]);
+        assert_eq!(
+            client.run(&["SUNIONSTORE", "dst", "a", "b"]),
+            Frame::Integer(3)
+        );
+        assert_eq!(
+            client.run(&["SINTERSTORE", "i", "a", "b"]),
+            Frame::Integer(1)
+        );
+        assert_eq!(
+            client.run(&["SDIFFSTORE", "d", "a", "b"]),
+            Frame::Integer(1)
+        );
+        assert_eq!(sorted(client.run(&["SMEMBERS", "i"])), ["2"]);
+        assert_eq!(
+            client.run(&["SINTERSTORE", "dst", "a", "none"]),
+            Frame::Integer(0)
+        );
+        assert_eq!(client.run(&["EXISTS", "dst"]), Frame::Integer(0));
+    }
+
+    #[test]
+    fn algebra_reports_wrong_types() {
+        let mut client = Harness::new();
+        client.run(&["SET", "str", "v"]);
+        client.run(&["SADD", "a", "1"]);
+        let wrong = error("WRONGTYPE Operation against a key holding the wrong kind of value");
+        assert_eq!(client.run(&["SUNION", "a", "str"]), wrong);
+        assert_eq!(client.run(&["SINTER", "none", "str"]), wrong);
+        assert_eq!(client.run(&["SDIFFSTORE", "d", "a", "str"]), wrong);
     }
 
     #[test]
