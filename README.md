@@ -1,12 +1,51 @@
 # Raikou
 
-Raikou is a Redis-compatible server written in Rust. It speaks RESP2 and RESP3.
+Raikou is a Redis-compatible server written in Rust. It speaks RESP2 and, in a reduced form, RESP3.
 
 ## Load
 
 Raikou targets one node, hundreds of concurrent clients, and data that fits in memory.
 
+## Run
+
+```sh
+cargo run --release -- --bind 127.0.0.1 --port 6379
+```
+
+## Supported commands
+
+- Connection: `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT ID|GETNAME|SETNAME|SETINFO|INFO`
+- Server: `INFO` `COMMAND` `COMMAND COUNT|DOCS` `CONFIG GET` `DBSIZE` `FLUSHDB` `FLUSHALL`
+- Keys: `DEL` `UNLINK` `EXISTS` `TYPE` `TOUCH` `RENAME` `RENAMENX` `KEYS` `SCAN` `RANDOMKEY`
+- Expiry: `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` `EXPIRETIME` `PEXPIRETIME`
+- Strings: `GET` `SET` (`NX` `XX` `GET` `EX` `PX` `EXAT` `PXAT` `KEEPTTL` `IFEQ` `IFNE`) `SETNX` `SETEX` `PSETEX`
+  `GETSET` `GETDEL` `GETEX` `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `GETRANGE` `SETRANGE` `INCR` `DECR`
+  `INCRBY` `DECRBY` `INCRBYFLOAT`
+- Lists: `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LRANGE` `LINDEX` `LSET` `LREM` `LTRIM`
+  `LINSERT` `LMOVE` `RPOPLPUSH`
+- Hashes: `HSET` `HGET` `HMSET` `HMGET` `HGETALL` `HDEL` `HEXISTS` `HLEN` `HKEYS` `HVALS` `HSETNX`
+  `HSTRLEN` `HINCRBY` `HINCRBYFLOAT`
+- Sets: `SADD` `SREM` `SMEMBERS` `SISMEMBER` `SMISMEMBER` `SCARD` `SPOP` `SRANDMEMBER` `SMOVE` `SUNION`
+  `SINTER` `SDIFF` `SUNIONSTORE` `SINTERSTORE` `SDIFFSTORE`
+
+Sorted sets, transactions, pub/sub and clean shutdown are not built yet. See the open issues.
+
+## Known divergences
+
+- `INFO`, `COMMAND`, `CLIENT INFO` and the `HELLO` fields `version`, `id` and `modules` differ from Redis.
+- `SET ... IFDEQ|IFDNE` is a syntax error; it needs the XXH3 digest.
+- Redis 8.10.3 stays silent when a bad argument header arrives in a later read than its `*N` header,
+  and it never limits an oversized bulk-count line. Raikou reports both as protocol errors.
+- `SCAN` cursors are hash positions, not Redis cursors. A full scan returns the same keys.
+- `INCRBYFLOAT` and `HINCRBYFLOAT` emulate the x87 `long double` of Redis. Values beyond 38 digits or
+  `1e38` use double precision, and subnormal extended values are not modeled.
+- Hash, set and `KEYS` replies come in hash order. Redis returns small ones in insertion order.
+
 ## Check
 
-Run `scripts/check.sh` before each commit. It needs a nightly `rustfmt` and, from the compatibility
-suite on, Docker.
+`scripts/check.sh` runs `rustfmt` (nightly), `clippy`, a comment check, the tests and the docs.
+
+The `compat` test needs Docker. It starts `redis:8.10.3` as the oracle and compares replies from
+`redis-cli` (cases in `tests/cases/cli`) and raw bytes (cases in `tests/cases/wire`) on both servers.
+`RAIKOU_COMPAT_SELF=1` compares the oracle with itself, and `RAIKOU_COMPAT_FILTER=name` runs matching
+case files only.
