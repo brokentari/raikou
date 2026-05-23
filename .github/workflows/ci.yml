@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains
+        run: |
+          rustup toolchain install stable --profile minimal -c clippy
+          rustup toolchain install nightly --profile minimal -c rustfmt
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Pull the Redis oracle
+        run: docker pull redis:8.10.3
+      - name: Run the quality gate
+        run: scripts/check.sh
