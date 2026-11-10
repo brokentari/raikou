@@ -219,15 +219,23 @@ pub(crate) fn dispatch(
     now_ms: u64,
     argv: &[Bytes],
 ) -> Frame {
-    execute(
-        &mut Context {
-            state,
-            session,
-            now_ms,
-        },
-        argv,
-    )
-    .unwrap_or_else(Frame::from)
+    guarded(|| {
+        execute(
+            &mut Context {
+                state,
+                session,
+                now_ms,
+            },
+            argv,
+        )
+        .unwrap_or_else(Frame::from)
+    })
+}
+
+/// Runs `work`; a panic becomes an error reply, so one bad command cannot poison the state lock.
+fn guarded(work: impl FnOnce() -> Frame) -> Frame {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Frame::Error(Bytes::from_static(b"ERR internal error")))
 }
 
 fn execute(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -274,6 +282,12 @@ mod tests {
     #[test]
     fn table_is_sorted_and_unique() {
         check_table(COMMANDS);
+    }
+
+    #[test]
+    fn a_panicking_command_becomes_an_error_reply() {
+        assert_eq!(guarded(|| panic!("boom")), error("ERR internal error"));
+        assert_eq!(guarded(Frame::ok), Frame::ok());
     }
 
     #[test]

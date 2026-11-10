@@ -113,7 +113,11 @@ fn ttl_generic(context: &mut Context<'_>, argv: &[Bytes], millis: bool, absolute
     };
     let now = i64::try_from(*now_ms).unwrap_or(i64::MAX);
     let value = if absolute { at } else { (at - now).max(0) };
-    Frame::Integer(if millis { value } else { (value + 500) / 1000 })
+    Frame::Integer(if millis {
+        value
+    } else {
+        value.saturating_add(500) / 1000
+    })
 }
 
 pub(super) fn ttl(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {
@@ -352,6 +356,18 @@ mod tests {
         assert_eq!(client.run(&["TTL", "k"]), Frame::Integer(-1));
         assert_eq!(client.run(&["TTL", "missing"]), Frame::Integer(-2));
         assert_eq!(client.run(&["PERSIST", "missing"]), Frame::Integer(0));
+    }
+
+    #[test]
+    fn expiretime_near_the_largest_deadline_does_not_overflow() {
+        let mut client = Harness::new();
+        client.run(&["SET", "k", "v"]);
+        client.run(&["PEXPIREAT", "k", "9223372036854775807"]);
+        assert_eq!(client.run(&["PEXPIRETIME", "k"]), Frame::Integer(i64::MAX));
+        assert_eq!(
+            client.run(&["EXPIRETIME", "k"]),
+            Frame::Integer(i64::MAX / 1000)
+        );
     }
 
     #[test]

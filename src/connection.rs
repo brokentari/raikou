@@ -15,6 +15,8 @@ use crate::{clock, command, request};
 // shortcut: Redis closes a client at 1 GiB of unparsed input, so do we
 const MAX_INPUT_LEN: usize = 1 << 30;
 
+const FLUSH_THRESHOLD: usize = 1 << 20;
+
 pub(crate) async fn run(
     mut stream: TcpStream,
     id: i64,
@@ -25,13 +27,14 @@ pub(crate) async fn run(
     let peer = stream.peer_addr()?.to_string();
     let local = stream.local_addr()?.to_string();
     let mut session = Session::new(id, peer, local);
+    let mut parser = request::Parser::default();
     loop {
         if stream.read_buf(&mut input).await? == 0 {
             return Ok(());
         }
         let mut close = input.len() > MAX_INPUT_LEN;
         while !close {
-            match request::parse(&input) {
+            match parser.parse(&input) {
                 Ok(Some((argv, used))) => {
                     input.advance(used);
                     if !argv.is_empty() {
@@ -41,6 +44,10 @@ pub(crate) async fn run(
                         };
                         resp::encode(&reply, session.protocol, &mut output);
                         close = session.closing;
+                        if output.len() >= FLUSH_THRESHOLD {
+                            stream.write_all(&output).await?;
+                            output.clear();
+                        }
                     }
                 }
                 Ok(None) => break,

@@ -12,6 +12,9 @@ use crate::{number, random};
 
 type Set = HashSet<Bytes>;
 
+// shortcut: a negative SRANDMEMBER count is bounded, Redis would stream any size
+const MAX_REPEATED_REPLY: usize = 1 << 24;
+
 fn count_frame(len: usize) -> Frame {
     Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
 }
@@ -178,6 +181,9 @@ pub(super) fn srandmember(
         return Ok(Frame::Array(Vec::new()));
     };
     let wanted = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
+    if count < 0 && wanted > MAX_REPEATED_REPLY {
+        return Err(CommandError::other("ERR count is too large"));
+    }
     let members = if count < 0 {
         let all: Vec<&Bytes> = set.iter().collect();
         let picks = (0..wanted).map(|_| all[random::below(all.len())].clone());
@@ -508,6 +514,17 @@ mod tests {
         assert_eq!(client.run(&["SUNION", "a", "str"]), wrong);
         assert_eq!(client.run(&["SINTER", "none", "str"]), wrong);
         assert_eq!(client.run(&["SDIFFSTORE", "d", "a", "str"]), wrong);
+    }
+
+    #[test]
+    fn srandmember_refuses_absurd_negative_counts() {
+        let mut client = Harness::new();
+        client.run(&["SADD", "s", "a"]);
+        assert_eq!(
+            client.run(&["SRANDMEMBER", "s", "-9223372036854775807"]),
+            error("ERR count is too large")
+        );
+        assert_eq!(client.run(&["PING"]), Frame::simple("PONG"));
     }
 
     #[test]

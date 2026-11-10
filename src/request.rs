@@ -46,13 +46,86 @@ impl std::error::Error for ProtocolError {}
 
 type Parsed = Result<Option<(Vec<Bytes>, usize)>, ProtocolError>;
 
-/// Parses the first request in `buf`; `None` means it is incomplete.
-pub fn parse(buf: &[u8]) -> Parsed {
-    match buf.first() {
-        None => Ok(None),
-        Some(b'*') => multibulk(buf),
-        Some(_) => inline(buf),
+/// Parses requests from a growing buffer and remembers how far an unfinished one got.
+#[derive(Debug, Default)]
+pub struct Parser {
+    partial: Option<Partial>,
+}
+
+#[derive(Debug)]
+struct Partial {
+    left: i64,
+    args: Vec<Bytes>,
+    pos: usize,
+}
+
+impl Parser {
+    /// Parses the first request in `buf`; `None` means it is incomplete, so call again with more.
+    pub fn parse(&mut self, buf: &[u8]) -> Parsed {
+        let result = if self.partial.is_some() {
+            self.resume(buf)
+        } else {
+            match buf.first() {
+                None => Ok(None),
+                Some(b'*') => self.start(buf),
+                Some(_) => inline(buf),
+            }
+        };
+        if result.is_err() {
+            self.partial = None;
+        }
+        result
     }
+
+    fn start(&mut self, buf: &[u8]) -> Parsed {
+        let Some((head, pos)) = line(buf, 1, ProtocolError::TooBigMultibulkCount)? else {
+            return Ok(None);
+        };
+        let count = number::parse_i64(head)
+            .filter(|&count| count <= i64::from(i32::MAX))
+            .ok_or(ProtocolError::InvalidMultibulkLength)?;
+        if count <= 0 {
+            return Ok(Some((Vec::new(), pos)));
+        }
+        self.partial = Some(Partial {
+            left: count,
+            args: Vec::new(),
+            pos,
+        });
+        self.resume(buf)
+    }
+
+    fn resume(&mut self, buf: &[u8]) -> Parsed {
+        let Some(partial) = self.partial.as_mut() else {
+            return Ok(None);
+        };
+        while partial.left > 0 {
+            let Some((head, start)) = line(buf, partial.pos, ProtocolError::TooBigBulkCount)?
+            else {
+                return Ok(None);
+            };
+            if buf[partial.pos] != b'$' {
+                return Err(ProtocolError::ExpectedDollar(buf[partial.pos]));
+            }
+            let len = number::parse_i64(&head[1..])
+                .filter(|len| (0..=MAX_BULK_LEN).contains(len))
+                .and_then(|len| usize::try_from(len).ok())
+                .ok_or(ProtocolError::InvalidBulkLength)?;
+            let end = start + len;
+            if buf.len() < end + 2 {
+                return Ok(None);
+            }
+            partial.args.push(Bytes::copy_from_slice(&buf[start..end]));
+            partial.pos = end + 2;
+            partial.left -= 1;
+        }
+        Ok(self.partial.take().map(|done| (done.args, done.pos)))
+    }
+}
+
+/// Parses the first request in `buf` with a fresh parser.
+pub fn parse(buf: &[u8]) -> Parsed {
+    Parser::default().parse(buf)
 }
 
 fn inline(buf: &[u8]) -> Parsed {
@@ -180,35 +253,6 @@ fn line(
     }
 }
 
-fn multibulk(buf: &[u8]) -> Parsed {
-    let Some((head, mut pos)) = line(buf, 1, ProtocolError::TooBigMultibulkCount)? else {
-        return Ok(None);
-    };
-    let count = number::parse_i64(head)
-        .filter(|&count| count <= i64::from(i32::MAX))
-        .ok_or(ProtocolError::InvalidMultibulkLength)?;
-    let mut args = Vec::new();
-    for _ in 0..count {
-        let Some((head, start)) = line(buf, pos, ProtocolError::TooBigBulkCount)? else {
-            return Ok(None);
-        };
-        if buf[pos] != b'$' {
-            return Err(ProtocolError::ExpectedDollar(buf[pos]));
-        }
-        let len = number::parse_i64(&head[1..])
-            .filter(|len| (0..=MAX_BULK_LEN).contains(len))
-            .and_then(|len| usize::try_from(len).ok())
-            .ok_or(ProtocolError::InvalidBulkLength)?;
-        let end = start + len;
-        if buf.len() < end + 2 {
-            return Ok(None);
-        }
-        args.push(Bytes::copy_from_slice(&buf[start..end]));
-        pos = end + 2;
-    }
-    Ok(Some((args, pos)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +347,34 @@ mod tests {
     fn inline_waits_for_newline() {
         assert_eq!(parse(b"PING"), Ok(None));
         assert_eq!(parse(b"PING\r"), Ok(None));
+    }
+
+    #[test]
+    fn a_parser_resumes_where_it_stopped() {
+        let input = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$5\r\nhello\r\n";
+        let mut parser = Parser::default();
+        for end in 0..input.len() {
+            assert_eq!(
+                parser.parse(&input[..end]),
+                Ok(None),
+                "prefix of {end} bytes"
+            );
+        }
+        let (argv, used) = parser.parse(input).expect("valid").expect("complete");
+        assert_eq!((argv.len(), used), (3, input.len()));
+        let (next, _) = parser.parse(b"PING\r\n").expect("valid").expect("complete");
+        assert_eq!(next, vec![Bytes::from("PING")]);
+    }
+
+    #[test]
+    fn a_parser_forgets_a_failed_request() {
+        let mut parser = Parser::default();
+        assert_eq!(
+            parser.parse(b"*2\r\n$1\r\na\r\n:1\r\n"),
+            Err(ProtocolError::ExpectedDollar(b':'))
+        );
+        let (argv, _) = parser.parse(b"PING\r\n").expect("valid").expect("complete");
+        assert_eq!(argv, vec![Bytes::from("PING")]);
     }
 
     #[test]

@@ -45,6 +45,8 @@ impl Environment {
                 ORACLE_IMAGE,
             ])
             .args([
+                "timeout",
+                "1800",
                 "redis-server",
                 "--bind",
                 "127.0.0.1",

@@ -11,6 +11,7 @@ use crate::{clock, connection};
 
 const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 const SWEEP_BATCH: usize = 1000;
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Accepts clients on `listener` and serves each on its own task.
 pub async fn serve(listener: TcpListener) -> io::Result<()> {
@@ -24,7 +25,11 @@ pub async fn serve(listener: TcpListener) -> io::Result<()> {
 async fn accept_loop(listener: &TcpListener, shared: &Arc<Mutex<State>>) -> io::Result<()> {
     let mut next_id = 1;
     loop {
-        let (stream, _) = listener.accept().await?;
+        let Ok((stream, _)) = listener.accept().await else {
+            // shortcut: accept errors (file limit, aborted connections) are retried after a pause
+            tokio::time::sleep(ACCEPT_RETRY).await;
+            continue;
+        };
         let id = next_id;
         next_id += 1;
         let shared = Arc::clone(shared);

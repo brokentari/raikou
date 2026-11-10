@@ -16,6 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check the tag matches the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --lib
