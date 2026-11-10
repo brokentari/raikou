@@ -9,6 +9,7 @@ repository = "https://github.com/brokentari/raikou"
 readme = "README.md"
 keywords = ["redis", "server", "resp", "database"]
 categories = ["database-implementations"]
+exclude = ["docs/"]
 
 [lib]
 path = "src/lib.rs"
