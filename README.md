@@ -15,6 +15,17 @@ cargo run --release -- --bind 127.0.0.1 --port 6379
 Raikou has no passwords: `AUTH` accepts any password for the `default` user. Keep it on a loopback
 address, which is the default. Raikou prints a warning when you bind anything else.
 
+## Docker
+
+Images are published to GitHub Container Registry: `latest` and a `sha-…` tag for each push to `main`,
+and `0.1.0`-style tags for releases.
+
+```sh
+docker run --rm -p 127.0.0.1:6379:6379 ghcr.io/brokentari/raikou:latest
+```
+
+Publish the port on loopback only, as above, because Raikou has no passwords.
+
 ## Supported commands
 
 - Connection: `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT ID|GETNAME|SETNAME|SETINFO|INFO`
