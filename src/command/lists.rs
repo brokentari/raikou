@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use bytes::Bytes;
 
-use crate::command::Context;
+use crate::command::{Context, count_frame, drop_when_empty, typed_mut, typed_ref};
 use crate::error::CommandError;
 use crate::number;
 use crate::resp::Frame;
@@ -16,8 +16,32 @@ enum End {
     Tail,
 }
 
-fn count_frame(len: usize) -> Frame {
-    Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
+fn list_ref<'a>(
+    context: &'a mut Context<'_>,
+    key: &[u8],
+) -> Result<Option<&'a VecDeque<Bytes>>, CommandError> {
+    typed_ref(context, key, |value| match value {
+        Value::List(list) => Some(list),
+        _ => None,
+    })
+}
+
+fn list_mut<'a>(
+    context: &'a mut Context<'_>,
+    key: &[u8],
+) -> Result<Option<&'a mut VecDeque<Bytes>>, CommandError> {
+    typed_mut(context, key, |value| match value {
+        Value::List(list) => Some(list),
+        _ => None,
+    })
+}
+
+fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
+    drop_when_empty(
+        context,
+        key,
+        |value| matches!(value, Value::List(list) if list.is_empty()),
+    );
 }
 
 fn integer(arg: &Bytes) -> Result<i64, CommandError> {
@@ -34,51 +58,6 @@ fn resolve_range(start: i64, end: i64, len: usize) -> Option<(usize, usize)> {
     }
     let end = end.min(len - 1);
     Some((usize::try_from(start).ok()?, usize::try_from(end).ok()?))
-}
-
-fn list_ref<'a>(
-    context: &'a mut Context<'_>,
-    key: &[u8],
-) -> Result<Option<&'a VecDeque<Bytes>>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::List(list)) => Ok(Some(list)),
-        Some(_) => Err(CommandError::WrongType),
-    }
-}
-
-fn list_mut<'a>(
-    context: &'a mut Context<'_>,
-    key: &[u8],
-) -> Result<Option<&'a mut VecDeque<Bytes>>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get_mut(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::List(list)) => Ok(Some(list)),
-        Some(_) => Err(CommandError::WrongType),
-    }
-}
-
-/// Removes the key when its list has become empty.
-fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    let empty = matches!(state.store.get(session.db, key, *now_ms), Some(Value::List(list)) if list.is_empty());
-    if empty {
-        state.store.remove(session.db, key, *now_ms);
-    }
 }
 
 fn push(
@@ -242,31 +221,31 @@ pub(super) fn lrem(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, C
     let Some(list) = list_mut(context, &argv[1])? else {
         return Ok(Frame::Integer(0));
     };
-    let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
-    let limit = if limit == 0 { usize::MAX } else { limit };
-    let mut removed = 0;
-    let mut index = if count < 0 { list.len() } else { 0 };
-    while removed < limit && index <= list.len() {
-        if count < 0 {
-            if index == 0 {
-                break;
-            }
-            index -= 1;
-            if list[index] == argv[3] {
-                list.remove(index);
-                removed += 1;
-            }
-        } else if index < list.len() {
-            if list[index] == argv[3] {
-                list.remove(index);
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        } else {
-            break;
-        }
+    let limit = if count == 0 {
+        usize::MAX
+    } else {
+        usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX)
+    };
+    let matching = list
+        .iter()
+        .enumerate()
+        .filter(|(_, element)| **element == argv[3])
+        .map(|(index, _)| index);
+    let mut hits: Vec<usize> = if count < 0 {
+        matching
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .take(limit)
+            .collect()
+    } else {
+        matching.take(limit).collect()
+    };
+    hits.sort_unstable_by(|left, right| right.cmp(left));
+    for index in &hits {
+        list.remove(*index);
     }
+    let removed = hits.len();
     drop_if_empty(context, &argv[1]);
     Ok(count_frame(removed))
 }

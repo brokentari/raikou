@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 
-use crate::command::Context;
+use crate::command::{Context, count_frame, drop_when_empty, typed_mut, typed_ref};
 use crate::error::CommandError;
 use crate::long_double::{LongDouble, Parsed};
 use crate::number;
@@ -13,40 +13,32 @@ use crate::value::Value;
 
 type Hash = HashMap<Bytes, Bytes>;
 
-fn count_frame(len: usize) -> Frame {
-    Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
-}
-
 fn hash_ref<'a>(
     context: &'a mut Context<'_>,
     key: &[u8],
 ) -> Result<Option<&'a Hash>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::Hash(hash)) => Ok(Some(hash)),
-        Some(_) => Err(CommandError::WrongType),
-    }
+    typed_ref(context, key, |value| match value {
+        Value::Hash(hash) => Some(hash),
+        _ => None,
+    })
 }
 
 fn hash_mut<'a>(
     context: &'a mut Context<'_>,
     key: &[u8],
 ) -> Result<Option<&'a mut Hash>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get_mut(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::Hash(hash)) => Ok(Some(hash)),
-        Some(_) => Err(CommandError::WrongType),
-    }
+    typed_mut(context, key, |value| match value {
+        Value::Hash(hash) => Some(hash),
+        _ => None,
+    })
+}
+
+fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
+    drop_when_empty(
+        context,
+        key,
+        |value| matches!(value, Value::Hash(hash) if hash.is_empty()),
+    );
 }
 
 /// Returns the hash under `key`, creating an empty one when the key is free.
@@ -61,18 +53,6 @@ fn hash_or_create<'a>(
             .set(session.db, key.clone(), Value::Hash(Hash::new()));
     }
     hash_mut(context, key)?.ok_or(CommandError::WrongType)
-}
-
-fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    let empty = matches!(state.store.get(session.db, key, *now_ms), Some(Value::Hash(hash)) if hash.is_empty());
-    if empty {
-        state.store.remove(session.db, key, *now_ms);
-    }
 }
 
 fn set_fields(

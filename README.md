@@ -12,6 +12,9 @@ Raikou targets one node, hundreds of concurrent clients, and data that fits in m
 cargo run --release -- --bind 127.0.0.1 --port 6379
 ```
 
+Raikou has no passwords: `AUTH` accepts any password for the `default` user. Keep it on a loopback
+address, which is the default. Raikou prints a warning when you bind anything else.
+
 ## Supported commands
 
 - Connection: `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT ID|GETNAME|SETNAME|SETINFO|INFO`

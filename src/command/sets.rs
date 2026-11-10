@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use bytes::Bytes;
 
-use crate::command::Context;
+use crate::command::{Context, count_frame, drop_when_empty, typed_mut, typed_ref};
 use crate::error::CommandError;
 use crate::resp::Frame;
 use crate::value::Value;
@@ -13,51 +13,31 @@ use crate::{number, random};
 type Set = HashSet<Bytes>;
 
 // shortcut: a negative SRANDMEMBER count is bounded, Redis would stream any size
-const MAX_REPEATED_REPLY: usize = 1 << 24;
-
-fn count_frame(len: usize) -> Frame {
-    Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
-}
+const MAX_REPEATED_REPLY: usize = 1 << 20;
 
 fn set_ref<'a>(context: &'a mut Context<'_>, key: &[u8]) -> Result<Option<&'a Set>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::Set(set)) => Ok(Some(set)),
-        Some(_) => Err(CommandError::WrongType),
-    }
+    typed_ref(context, key, |value| match value {
+        Value::Set(set) => Some(set),
+        _ => None,
+    })
 }
 
 fn set_mut<'a>(
     context: &'a mut Context<'_>,
     key: &[u8],
 ) -> Result<Option<&'a mut Set>, CommandError> {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    match state.store.get_mut(session.db, key, *now_ms) {
-        None => Ok(None),
-        Some(Value::Set(set)) => Ok(Some(set)),
-        Some(_) => Err(CommandError::WrongType),
-    }
+    typed_mut(context, key, |value| match value {
+        Value::Set(set) => Some(set),
+        _ => None,
+    })
 }
 
 fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
-    let Context {
-        state,
-        session,
-        now_ms,
-    } = context;
-    let empty = matches!(state.store.get(session.db, key, *now_ms), Some(Value::Set(set)) if set.is_empty());
-    if empty {
-        state.store.remove(session.db, key, *now_ms);
-    }
+    drop_when_empty(
+        context,
+        key,
+        |value| matches!(value, Value::Set(set) if set.is_empty()),
+    );
 }
 
 pub(super) fn sadd(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, CommandError> {

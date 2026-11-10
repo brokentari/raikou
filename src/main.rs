@@ -33,6 +33,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     Ok(options)
 }
 
+fn is_loopback(bind: &str) -> bool {
+    bind == "localhost"
+        || bind
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let options = match parse_options(std::env::args().skip(1)) {
@@ -52,6 +59,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if !is_loopback(&options.bind) {
+        eprintln!(
+            "raikou: warning: there is no password support; anyone who can reach this port has full access"
+        );
+    }
     if let Err(error) = server::serve(listener).await {
         eprintln!("raikou: {error}");
         return ExitCode::FAILURE;
@@ -77,6 +89,16 @@ mod tests {
     fn reads_both_flags() {
         let options = options(&["--port", "7000", "--bind", "0.0.0.0"]).expect("valid");
         assert_eq!((options.bind.as_str(), options.port), ("0.0.0.0", 7000));
+    }
+
+    #[test]
+    fn only_local_addresses_are_loopback() {
+        for bind in ["127.0.0.1", "::1", "localhost", "127.0.0.2"] {
+            assert!(is_loopback(bind), "{bind}");
+        }
+        for bind in ["0.0.0.0", "192.168.1.5", "::", "example.com"] {
+            assert!(!is_loopback(bind), "{bind}");
+        }
     }
 
     #[test]

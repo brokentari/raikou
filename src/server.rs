@@ -127,6 +127,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn large_pipelined_replies_arrive_complete_and_in_order() {
+        let mut client = start().await;
+        let value = "x".repeat(600_000);
+        let mut request =
+            format!("*3\r\n$3\r\nSET\r\n$3\r\nbig\r\n$600000\r\n{value}\r\n").into_bytes();
+        for _ in 0..6 {
+            request.extend_from_slice(b"GET big\r\n");
+        }
+        request.extend_from_slice(b"PING\r\n");
+        client.write_all(&request).await.expect("write");
+        let mut expected = b"+OK\r\n".to_vec();
+        for _ in 0..6 {
+            expected.extend_from_slice(format!("$600000\r\n{value}\r\n").as_bytes());
+        }
+        expected.extend_from_slice(b"+PONG\r\n");
+        let mut reply = vec![0; expected.len()];
+        client.read_exact(&mut reply).await.expect("read");
+        assert!(reply == expected, "replies differ");
+    }
+
+    #[tokio::test]
     async fn closes_after_a_protocol_error() {
         let reply = exchange(b"*x\r\nPING\r\n").await;
         assert_eq!(reply, b"-ERR Protocol error: invalid multibulk length\r\n");

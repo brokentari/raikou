@@ -21,6 +21,7 @@ use crate::error::CommandError;
 use crate::resp::Frame;
 use crate::session::Session;
 use crate::state::State;
+use crate::value::Value;
 
 /// The Redis version that Raikou reports and is tested against.
 pub(crate) const REDIS_VERSION: &str = "8.10.3";
@@ -30,6 +31,61 @@ pub(crate) struct Context<'a> {
     pub(crate) state: &'a mut State,
     pub(crate) session: &'a mut Session,
     pub(crate) now_ms: u64,
+}
+
+/// An integer reply holding a length or count.
+pub(crate) fn count_frame(len: usize) -> Frame {
+    Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
+}
+
+/// Reads the value under `key` as a `T`; a value of another type is a `WRONGTYPE` error.
+pub(crate) fn typed_ref<'a, T>(
+    context: &'a mut Context<'_>,
+    key: &[u8],
+    pick: fn(&Value) -> Option<&T>,
+) -> Result<Option<&'a T>, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    match state.store.get(session.db, key, *now_ms) {
+        None => Ok(None),
+        Some(value) => pick(value).map(Some).ok_or(CommandError::WrongType),
+    }
+}
+
+/// Like `typed_ref`, but the value can be changed in place.
+pub(crate) fn typed_mut<'a, T>(
+    context: &'a mut Context<'_>,
+    key: &[u8],
+    pick: fn(&mut Value) -> Option<&mut T>,
+) -> Result<Option<&'a mut T>, CommandError> {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    match state.store.get_mut(session.db, key, *now_ms) {
+        None => Ok(None),
+        Some(value) => pick(value).map(Some).ok_or(CommandError::WrongType),
+    }
+}
+
+/// Removes `key` when `is_empty` says its collection has run out of members.
+pub(crate) fn drop_when_empty(context: &mut Context<'_>, key: &[u8], is_empty: fn(&Value) -> bool) {
+    let Context {
+        state,
+        session,
+        now_ms,
+    } = context;
+    if state
+        .store
+        .get(session.db, key, *now_ms)
+        .is_some_and(is_empty)
+    {
+        state.store.remove(session.db, key, *now_ms);
+    }
 }
 
 pub(crate) type Handler = fn(&mut Context<'_>, &[Bytes]) -> Result<Frame, CommandError>;
