@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use raikou::server;
+use tokio::signal::unix::{SignalKind, signal};
 
 const USAGE: &str = "usage: raikou [--bind ADDRESS] [--port PORT]";
 
@@ -32,6 +33,17 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     Ok(options)
 }
 
+/// Waits for SIGINT or SIGTERM and returns its name.
+async fn stop_signal() -> &'static str {
+    let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+        return tokio::signal::ctrl_c().await.map_or("error", |()| "SIGINT");
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => "SIGINT",
+        _ = terminate.recv() => "SIGTERM",
+    }
+}
+
 fn is_loopback(bind: &str) -> bool {
     bind == "localhost"
         || bind
@@ -58,15 +70,29 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    match listener.local_addr() {
+        Ok(address) => println!("{}", server::banner(address)),
+        Err(error) => eprintln!("raikou: cannot read the listening address: {error}"),
+    }
     if !is_loopback(&options.bind) {
         eprintln!(
             "raikou: warning: there is no password support; anyone who can reach this port has full access"
         );
     }
-    if let Err(error) = server::serve(listener).await {
+    let result = server::serve_until(listener, async {
+        let name = stop_signal().await;
+        println!("Received {name}, shutting down (send it again to stop at once)");
+        tokio::spawn(async {
+            stop_signal().await;
+            std::process::exit(130);
+        });
+    })
+    .await;
+    if let Err(error) = result {
         eprintln!("raikou: {error}");
         return ExitCode::FAILURE;
     }
+    println!("Bye");
     ExitCode::SUCCESS
 }
 

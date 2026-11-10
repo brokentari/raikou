@@ -1,6 +1,8 @@
 //! The TCP accept loop.
 
+use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,13 +32,43 @@ pub async fn bind(host: &str, port: u16) -> io::Result<TcpListener> {
     socket.listen(LISTEN_BACKLOG)
 }
 
-/// Accepts clients on `listener` and serves each on its own task.
+/// Describes the server for the startup message.
+#[must_use]
+pub fn banner(address: SocketAddr) -> String {
+    format!(
+        "Raikou {} (compatible with Redis {}), pid {}\n\
+         Listening on {address}\n\
+         {} databases, {} commands; press Ctrl-C or send SIGTERM to stop",
+        env!("CARGO_PKG_VERSION"),
+        crate::command::REDIS_VERSION,
+        std::process::id(),
+        crate::session::DATABASES,
+        crate::command::count(),
+    )
+}
+
+/// Accepts clients on `listener` until the process stops.
 pub async fn serve(listener: TcpListener) -> io::Result<()> {
+    serve_until(listener, std::future::pending()).await
+}
+
+/// Accepts clients on `listener` and serves each on its own task until `shutdown` completes.
+pub async fn serve_until(
+    listener: TcpListener,
+    shutdown: impl Future<Output = ()>,
+) -> io::Result<()> {
     let shared = Arc::new(Mutex::new(State::default()));
     let sweeper = tokio::spawn(sweep(Arc::clone(&shared)));
-    let result = accept_loop(&listener, &shared).await;
-    sweeper.abort();
-    result
+    tokio::select! {
+        result = accept_loop(&listener, &shared) => {
+            sweeper.abort();
+            result
+        }
+        () = shutdown => {
+            sweeper.abort();
+            Ok(())
+        }
+    }
 }
 
 async fn accept_loop(listener: &TcpListener, shared: &Arc<Mutex<State>>) -> io::Result<()> {
@@ -179,6 +211,31 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn serve_until_returns_when_told_to_stop() {
+        let listener = bind("127.0.0.1", 0).await.expect("bind");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_until(listener, async {
+            let _ = stopped.await;
+        }));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!server.is_finished());
+        stop.send(()).expect("server is listening for the signal");
+        let result = tokio::time::timeout(Duration::from_secs(2), server).await;
+        assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
+    }
+
+    #[test]
+    fn the_banner_names_the_version_and_address() {
+        let text = banner("127.0.0.1:6379".parse().expect("address"));
+        assert!(
+            text.starts_with(&format!("Raikou {} ", env!("CARGO_PKG_VERSION"))),
+            "{text}"
+        );
+        assert!(text.contains("Listening on 127.0.0.1:6379"), "{text}");
+        assert!(text.contains("16 databases"), "{text}");
     }
 
     #[tokio::test]

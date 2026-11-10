@@ -12,6 +12,10 @@ Raikou targets one node, hundreds of concurrent clients, and data that fits in m
 cargo run --release -- --bind 127.0.0.1 --port 6379
 ```
 
+On start it prints its version, process id, address, and the number of databases and commands.
+SIGINT or SIGTERM stops it: the first signal stops accepting clients and exits with code 0, and a
+second signal exits at once.
+
 Raikou has no passwords: `AUTH` accepts any password for the `default` user. Keep it on a loopback
 address, which is the default. Raikou prints a warning when you bind anything else.
 
