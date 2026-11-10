@@ -1,14 +1,15 @@
-//! Raikou, a Redis-compatible server.
+#![doc = include_str!("../README.md")]
 
 mod clock;
 mod command;
 mod connection;
-pub mod error;
+mod error;
 mod glob;
 mod long_double;
-pub mod number;
+mod number;
 mod random;
-pub mod request;
+mod request;
+#[doc(hidden)]
 pub mod resp;
 pub mod server;
 mod session;

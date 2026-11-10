@@ -2,6 +2,8 @@
 
 Raikou is a Redis-compatible server written in Rust. It speaks RESP2 and, in a reduced form, RESP3.
 
+![Raikou serving redis-cli commands](https://raw.githubusercontent.com/brokentari/raikou/main/docs/demo.gif)
+
 ## Load
 
 Raikou targets one node, hundreds of concurrent clients, and data that fits in memory.
@@ -18,6 +20,29 @@ second signal exits at once.
 
 Raikou has no passwords: `AUTH` accepts any password for the `default` user. Keep it on a loopback
 address, which is the default. Raikou prints a warning when you bind anything else.
+
+## Embed
+
+Add `raikou` to a Rust project to start a server from your code. The server needs a Tokio runtime.
+
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> std::io::Result<()> {
+// Port 0 asks the system for a free port.
+let listener = raikou::server::bind("127.0.0.1", 0).await?;
+println!("listening on {}", listener.local_addr()?);
+let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+let server = tokio::spawn(raikou::server::serve_until(listener, async {
+    let _ = stopped.await;
+}));
+// Connect any Redis client to the address, then stop the server.
+stop.send(()).ok();
+server.await??;
+# Ok(())
+# }
+```
+
+`serve` runs until the process ends. `serve_until` also stops when the future you pass completes.
 
 ## Docker
 

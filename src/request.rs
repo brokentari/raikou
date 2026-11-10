@@ -11,7 +11,7 @@ const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 
 /// Why a client's bytes are not a request; the connection closes after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProtocolError {
+pub(crate) enum ProtocolError {
     /// An inline request has no end within the line limit.
     TooBigInline,
     /// An inline request has a quote that is not closed or not followed by a space.
@@ -48,7 +48,7 @@ type Parsed = Result<Option<(Vec<Bytes>, usize)>, ProtocolError>;
 
 /// Parses requests from a growing buffer and remembers how far an unfinished one got.
 #[derive(Debug, Default)]
-pub struct Parser {
+pub(crate) struct Parser {
     partial: Option<Partial>,
 }
 
@@ -61,7 +61,7 @@ struct Partial {
 
 impl Parser {
     /// Parses the first request in `buf`; `None` means it is incomplete, so call again with more.
-    pub fn parse(&mut self, buf: &[u8]) -> Parsed {
+    pub(crate) fn parse(&mut self, buf: &[u8]) -> Parsed {
         let result = if self.partial.is_some() {
             self.resume(buf)
         } else {
@@ -124,7 +124,8 @@ impl Parser {
 }
 
 /// Parses the first request in `buf` with a fresh parser.
-pub fn parse(buf: &[u8]) -> Parsed {
+#[cfg(test)]
+pub(crate) fn parse(buf: &[u8]) -> Parsed {
     Parser::default().parse(buf)
 }
 

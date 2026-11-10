@@ -2,7 +2,7 @@
 
 /// Parses `text` as a decimal `i64` the way Redis `string2ll` does.
 #[must_use]
-pub fn parse_i64(text: &[u8]) -> Option<i64> {
+pub(crate) fn parse_i64(text: &[u8]) -> Option<i64> {
     let (negative, digits) = match text.split_first() {
         Some((b'-', rest)) => (true, rest),
         _ => (false, text),
@@ -30,7 +30,7 @@ pub fn parse_i64(text: &[u8]) -> Option<i64> {
 
 /// Formats a double the way Redis writes it in a reply: the shortest digits that read back.
 #[must_use]
-pub fn format_double(value: f64) -> String {
+pub(crate) fn format_double(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_owned();
     }

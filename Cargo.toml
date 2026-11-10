@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.97"
 description = "A Redis-compatible server"
 license = "MIT"
+repository = "https://github.com/brokentari/raikou"
+readme = "README.md"
+keywords = ["redis", "server", "resp", "database"]
+categories = ["database-implementations"]
 
 [lib]
 path = "src/lib.rs"
