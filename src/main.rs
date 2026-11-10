@@ -3,7 +3,6 @@
 use std::process::ExitCode;
 
 use raikou::server;
-use tokio::net::TcpListener;
 
 const USAGE: &str = "usage: raikou [--bind ADDRESS] [--port PORT]";
 
@@ -49,7 +48,7 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let listener = match TcpListener::bind((options.bind.as_str(), options.port)).await {
+    let listener = match server::bind(&options.bind, options.port).await {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!(

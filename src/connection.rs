@@ -24,6 +24,8 @@ pub(crate) async fn run(
 ) -> io::Result<()> {
     let mut input = BytesMut::with_capacity(4096);
     let mut output = BytesMut::new();
+    // replies are written once per batch, so Nagle's delay only adds latency
+    stream.set_nodelay(true)?;
     let peer = stream.peer_addr()?.to_string();
     let local = stream.local_addr()?.to_string();
     let mut session = Session::new(id, peer, local);

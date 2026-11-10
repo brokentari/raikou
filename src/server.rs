@@ -4,14 +4,31 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
 
 use crate::state::State;
 use crate::{clock, connection};
 
 const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 const SWEEP_BATCH: usize = 1000;
+const LISTEN_BACKLOG: u32 = 1024;
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+
+/// Listens on `host:port` with a backlog sized for bursts of hundreds of clients.
+pub async fn bind(host: &str, port: u16) -> io::Result<TcpListener> {
+    let address = tokio::net::lookup_host((host, port))
+        .await?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to listen on"))?;
+    let socket = if address.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(address)?;
+    socket.listen(LISTEN_BACKLOG)
+}
 
 /// Accepts clients on `listener` and serves each on its own task.
 pub async fn serve(listener: TcpListener) -> io::Result<()> {
@@ -145,6 +162,23 @@ mod tests {
         let mut reply = vec![0; expected.len()];
         client.read_exact(&mut reply).await.expect("read");
         assert!(reply == expected, "replies differ");
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_connections_does_not_wait_for_syn_retries() {
+        let listener = bind("127.0.0.1", 0).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(serve(listener));
+        let started = tokio::time::Instant::now();
+        let mut clients = Vec::new();
+        for _ in 0..400 {
+            clients.push(TcpStream::connect(address).await.expect("connect"));
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(800),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

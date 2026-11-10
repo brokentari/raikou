@@ -44,6 +44,19 @@ Sorted sets, transactions, pub/sub and clean shutdown are not built yet. See the
   `1e38` use double precision, and subnormal extended values are not modeled.
 - Hash, set and `KEYS` replies come in hash order. Redis returns small ones in insertion order.
 
+## Performance
+
+`cargo bench --bench perf` starts Raikou and drives it with pipelined clients over TCP. It prints
+operations per second and batch latency (p50 and p99) for `PING`, `SET`, `GET`, `INCR`, `LPUSH`,
+`LRANGE`, `HSET`, `SADD` and `MSET`. It also opens 500 connections at once and moves 1 MiB values.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAIKOU_PERF_OPS` | 200000 | operations per workload |
+| `RAIKOU_PERF_CLIENTS` | 16 | client threads |
+| `RAIKOU_PERF_PIPELINE` | 16 | requests per batch |
+| `RAIKOU_PERF_MIN_OPS` | 0 | fail if any workload is slower (CI sets 20000) |
+
 ## Check
 
 `scripts/check.sh` runs `rustfmt` (nightly), `clippy`, a comment check, the tests and the docs.
