@@ -1,5 +1,3 @@
-//! Request parsing: bytes from a client to command arguments.
-
 use std::fmt;
 
 use bytes::Bytes;
@@ -9,22 +7,14 @@ use crate::number;
 const MAX_LINE_LEN: usize = 64 * 1024;
 const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 
-/// Why a client's bytes are not a request; the connection closes after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProtocolError {
-    /// An inline request has no end within the line limit.
     TooBigInline,
-    /// An inline request has a quote that is not closed or not followed by a space.
     UnbalancedQuotes,
-    /// The multibulk count line has no end within the line limit.
     TooBigMultibulkCount,
-    /// The multibulk count is not a number or is out of range.
     InvalidMultibulkLength,
-    /// An argument does not start with `$`.
     ExpectedDollar(u8),
-    /// The bulk length line has no end within the line limit.
     TooBigBulkCount,
-    /// The bulk length is not a number or is out of range.
     InvalidBulkLength,
 }
 
@@ -123,7 +113,6 @@ impl Parser {
     }
 }
 
-/// Parses the first request in `buf` with a fresh parser.
 #[cfg(test)]
 pub(crate) fn parse(buf: &[u8]) -> Parsed {
     Parser::default().parse(buf)

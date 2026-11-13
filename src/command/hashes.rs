@@ -1,5 +1,3 @@
-//! Hash commands.
-
 use std::collections::HashMap;
 
 use bytes::Bytes;
@@ -41,7 +39,6 @@ fn drop_if_empty(context: &mut Context<'_>, key: &[u8]) {
     );
 }
 
-/// Returns the hash under `key`, creating an empty one when the key is free.
 fn hash_or_create<'a>(
     context: &'a mut Context<'_>,
     key: &Bytes,

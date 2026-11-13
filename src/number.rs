@@ -1,5 +1,3 @@
-//! Strict number parsing and formatting with Redis rules.
-
 /// Parses `text` as a decimal `i64` the way Redis `string2ll` does.
 #[must_use]
 pub(crate) fn parse_i64(text: &[u8]) -> Option<i64> {

@@ -1,5 +1,3 @@
-//! A scripted client for handler unit tests.
-
 use bytes::Bytes;
 
 use crate::command;

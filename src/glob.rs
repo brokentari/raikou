@@ -1,8 +1,5 @@
-//! Redis glob patterns, as used by `KEYS`, `SCAN` and `PSUBSCRIBE`.
-
 const MAX_NESTING: u32 = 1000;
 
-/// Tells whether `string` matches the glob `pattern`, byte for byte.
 #[must_use]
 pub(crate) fn matches(pattern: &[u8], string: &[u8]) -> bool {
     matches_nested(pattern, 0, string, 0, 0, &mut false)

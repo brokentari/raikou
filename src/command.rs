@@ -1,5 +1,3 @@
-//! The command table and dispatch.
-
 #![allow(
     clippy::unnecessary_wraps,
     reason = "every handler shares one signature"
@@ -26,19 +24,16 @@ use crate::value::Value;
 /// The Redis version that Raikou reports and is tested against.
 pub(crate) const REDIS_VERSION: &str = "8.10.3";
 
-/// What a handler can see and change.
 pub(crate) struct Context<'a> {
     pub(crate) state: &'a mut State,
     pub(crate) session: &'a mut Session,
     pub(crate) now_ms: u64,
 }
 
-/// An integer reply holding a length or count.
 pub(crate) fn count_frame(len: usize) -> Frame {
     Frame::Integer(i64::try_from(len).unwrap_or(i64::MAX))
 }
 
-/// Reads the value under `key` as a `T`; a value of another type is a `WRONGTYPE` error.
 pub(crate) fn typed_ref<'a, T>(
     context: &'a mut Context<'_>,
     key: &[u8],
@@ -55,7 +50,6 @@ pub(crate) fn typed_ref<'a, T>(
     }
 }
 
-/// Like `typed_ref`, but the value can be changed in place.
 pub(crate) fn typed_mut<'a, T>(
     context: &'a mut Context<'_>,
     key: &[u8],
@@ -72,7 +66,6 @@ pub(crate) fn typed_mut<'a, T>(
     }
 }
 
-/// Removes `key` when `is_empty` says its collection has run out of members.
 pub(crate) fn drop_when_empty(context: &mut Context<'_>, key: &[u8], is_empty: fn(&Value) -> bool) {
     let Context {
         state,
@@ -90,7 +83,6 @@ pub(crate) fn drop_when_empty(context: &mut Context<'_>, key: &[u8], is_empty: f
 
 pub(crate) type Handler = fn(&mut Context<'_>, &[Bytes]) -> Result<Frame, CommandError>;
 
-/// One row of the command table.
 pub(crate) struct Command {
     pub(crate) name: &'static str,
     pub(crate) arity: i32,
@@ -263,12 +255,10 @@ fn find(table: &'static [Command], name: &[u8]) -> Option<&'static Command> {
     Some(&table[index])
 }
 
-/// The number of top-level commands in the table.
 pub(crate) fn count() -> usize {
     COMMANDS.len()
 }
 
-/// Runs the request `argv` for a client and returns the reply.
 pub(crate) fn dispatch(
     state: &mut State,
     session: &mut Session,

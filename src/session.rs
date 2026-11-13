@@ -1,13 +1,9 @@
-//! Per-client state.
-
 use bytes::Bytes;
 
 use crate::resp::Protocol;
 
-/// The number of databases a client can select.
 pub(crate) const DATABASES: usize = 16;
 
-/// The server's state for one client.
 #[derive(Debug)]
 pub(crate) struct Session {
     pub(crate) id: i64,
@@ -22,7 +18,6 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// Creates the session of a client that has just connected.
     pub(crate) fn new(id: i64, peer: String, local: String) -> Self {
         Self {
             id,
@@ -37,7 +32,6 @@ impl Session {
         }
     }
 
-    /// Returns the session to the state of a new connection, as `RESET` does.
     pub(crate) fn reset(&mut self) {
         self.protocol = Protocol::Resp2;
         self.name = None;

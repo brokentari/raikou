@@ -1,5 +1,3 @@
-//! Connection commands: `PING`, `ECHO`, `HELLO`, `CLIENT`, `SELECT`, `QUIT` and `RESET`.
-
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::command::{Context, REDIS_VERSION};

@@ -1,5 +1,3 @@
-//! Key commands.
-
 use bytes::Bytes;
 
 use crate::command::Context;

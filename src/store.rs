@@ -1,5 +1,3 @@
-//! All databases and their keys.
-
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -29,7 +27,6 @@ pub(crate) enum Ttl {
     At(u64),
 }
 
-/// When a key stops existing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Expiry {
     Missing,
@@ -78,7 +75,6 @@ impl Database {
     }
 }
 
-/// The keyspace: a fixed number of databases.
 #[derive(Debug)]
 pub(crate) struct Store {
     databases: Vec<Database>,
@@ -131,7 +127,6 @@ impl Store {
         );
     }
 
-    /// Reports whether `key` exists and when it expires.
     pub(crate) fn expiry(&mut self, db: usize, key: &[u8], now_ms: u64) -> Expiry {
         match self.databases[db].live(key, now_ms) {
             None => Expiry::Missing,
@@ -178,7 +173,6 @@ impl Store {
             .is_some_and(|entry| !entry.is_expired(now_ms))
     }
 
-    /// Removes a live key and returns its value and deadline.
     pub(crate) fn take(
         &mut self,
         db: usize,
@@ -249,7 +243,6 @@ impl Store {
         (0, found)
     }
 
-    /// Deletes up to `limit` keys whose deadline has passed; returns how many.
     pub(crate) fn purge_expired(&mut self, now_ms: u64, limit: usize) -> usize {
         let mut purged = 0;
         for database in &mut self.databases {
@@ -271,12 +264,10 @@ impl Store {
         purged
     }
 
-    /// Deletes every key in one database.
     pub(crate) fn flush_db(&mut self, db: usize) {
         self.databases[db] = Database::default();
     }
 
-    /// Deletes every key in every database.
     pub(crate) fn flush_all(&mut self) {
         for database in &mut self.databases {
             *database = Database::default();

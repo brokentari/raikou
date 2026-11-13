@@ -1,11 +1,8 @@
-//! Frame encoding.
-
 use bytes::{BufMut, BytesMut};
 
 use crate::number;
 use crate::resp::{Frame, Protocol};
 
-/// Appends the wire form of `frame` for a `protocol` client to `out`.
 pub fn encode(frame: &Frame, protocol: Protocol, out: &mut BytesMut) {
     let resp3 = protocol == Protocol::Resp3;
     match frame {

@@ -1,5 +1,3 @@
-//! Server commands: `INFO`, `COMMAND`, `CONFIG GET` and `FLUSHALL`.
-
 use bytes::Bytes;
 
 use crate::command::{self, Context, REDIS_VERSION};

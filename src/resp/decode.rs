@@ -1,5 +1,3 @@
-//! Frame decoding.
-
 use std::fmt;
 
 use bytes::Bytes;
@@ -10,22 +8,14 @@ const MAX_DEPTH: usize = 128;
 const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 const MAX_ARRAY_LEN: i64 = i32::MAX as i64;
 
-/// Why a buffer is not a valid frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeError {
-    /// The first byte of a frame is not a known type byte.
     InvalidType(u8),
-    /// A length is negative, too large or not a number.
     InvalidLength,
-    /// An integer is not a number.
     InvalidNumber,
-    /// A bulk payload is not followed by CRLF.
     MissingTerminator,
-    /// A boolean is neither `t` nor `f`.
     InvalidBoolean,
-    /// A verbatim string lacks its three-byte format and colon.
     InvalidVerbatim,
-    /// Arrays nest deeper than the decoder allows.
     TooDeep,
 }
 

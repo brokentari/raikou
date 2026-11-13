@@ -1,5 +1,3 @@
-//! List commands.
-
 use std::collections::VecDeque;
 
 use bytes::Bytes;

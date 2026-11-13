@@ -1,5 +1,3 @@
-//! Command errors, with the Redis wire text as their `Display`.
-
 use std::fmt;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -8,43 +6,28 @@ use crate::resp::Frame;
 
 const MAX_PREVIEW_LEN: usize = 128;
 
-/// An error reply to one command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandError {
-    /// The command name is not in the command table.
     UnknownCommand {
-        /// The name as the client sent it, cut to the preview limit.
         name: Bytes,
-        /// The quoted leading arguments.
         args: Bytes,
     },
-    /// The command has too few or too many arguments; holds the command name.
     WrongArity(String),
-    /// The subcommand name is not known to its command.
     UnknownSubcommand {
-        /// The name as the client sent it, cut to the preview limit.
         name: Bytes,
-        /// The command that owns the subcommands, in upper case.
         command: String,
     },
-    /// An argument is not a 64-bit integer.
     NotInteger,
-    /// The key holds a value of another type.
     WrongType,
-    /// An argument is not a float.
     NotFloat,
-    /// The expire argument of the named command is out of range.
     InvalidExpire(&'static str),
-    /// The arguments do not fit the command's syntax.
     Syntax,
-    /// The client asked for a RESP version the server lacks.
     NoProto,
     /// Any other error; holds the full text, including the `ERR` word.
     Other(Bytes),
 }
 
 impl CommandError {
-    /// Builds the unknown-command error for a request `argv`.
     #[must_use]
     pub fn unknown_command(argv: &[Bytes]) -> Self {
         let mut preview = BytesMut::new();
@@ -63,13 +46,11 @@ impl CommandError {
         }
     }
 
-    /// Builds an error from its full text, such as `ERR syntax error`.
     #[must_use]
     pub fn other(text: impl Into<Bytes>) -> Self {
         Self::Other(text.into())
     }
 
-    /// Builds the unknown-subcommand error for `command` and the name `sub` a client sent.
     #[must_use]
     pub fn unknown_subcommand(command: &str, sub: &Bytes) -> Self {
         Self::UnknownSubcommand {

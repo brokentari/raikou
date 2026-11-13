@@ -1,5 +1,3 @@
-//! Starts the Redis oracle in Docker and the Raikou server under test.
-
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::thread;

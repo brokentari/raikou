@@ -1,8 +1,5 @@
-//! The wall clock, in Unix milliseconds.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Returns the current time in milliseconds since the Unix epoch.
 pub(crate) fn now_ms() -> u64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1,5 +1,3 @@
-//! RESP frames: types, decoding and encoding.
-
 mod decode;
 mod encode;
 mod frame;

@@ -1,5 +1,3 @@
-//! Set commands.
-
 use std::collections::HashSet;
 
 use bytes::Bytes;
@@ -92,7 +90,6 @@ pub(super) fn scard(context: &mut Context<'_>, argv: &[Bytes]) -> Result<Frame, 
     Ok(count_frame(set_ref(context, &argv[1])?.map_or(0, Set::len)))
 }
 
-/// Picks `count` distinct random members, or all of them when the set is smaller.
 fn sample_distinct(set: &Set, count: usize) -> Vec<Bytes> {
     let mut members: Vec<Bytes> = set.iter().cloned().collect();
     let take = count.min(members.len());
@@ -207,7 +204,6 @@ enum Operation {
     Diff,
 }
 
-/// Copies the sets under `keys`; a missing key gives `None` and a wrong type is an error.
 fn load_sets(context: &mut Context<'_>, keys: &[Bytes]) -> Result<Vec<Option<Set>>, CommandError> {
     // shortcut: set algebra copies its operands while holding the lock
     keys.iter()

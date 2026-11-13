@@ -33,7 +33,6 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     Ok(options)
 }
 
-/// Waits for SIGINT or SIGTERM and returns its name.
 async fn stop_signal() -> &'static str {
     let Ok(mut terminate) = signal(SignalKind::terminate()) else {
         return tokio::signal::ctrl_c().await.map_or("error", |()| "SIGINT");

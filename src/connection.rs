@@ -1,5 +1,3 @@
-//! One client connection: read, parse, execute, write.
-
 use std::io;
 use std::sync::{Arc, Mutex};
 

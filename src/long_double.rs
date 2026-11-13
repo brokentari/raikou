@@ -10,7 +10,6 @@ pub(crate) struct LongDouble {
     exponent: i32,
 }
 
-/// The result of reading a number from text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Parsed {
     Finite(LongDouble),
@@ -162,7 +161,6 @@ impl LongDouble {
         }))
     }
 
-    /// Reads a decimal number or an infinity; `None` means the text is not a number.
     pub(crate) fn parse(text: &[u8]) -> Option<Parsed> {
         let text = std::str::from_utf8(text).ok()?;
         let (negative, body) = match text.strip_prefix('-') {
@@ -225,7 +223,6 @@ impl LongDouble {
             .then(|| Parsed::Finite(Self::from_f64(value)))
     }
 
-    /// Adds two values; `None` means the sum overflows.
     pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
         if self.mantissa == 0 {
             let both_negative = self.negative && other.negative;
